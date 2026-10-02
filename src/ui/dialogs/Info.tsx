@@ -274,7 +274,7 @@ export const StampDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ 
                   label: custom.trim().toUpperCase(),
                   color: '#c92a1e',
                   variant: 'dynamic',
-                } as never);
+                });
               } else {
                 setToolOption('stampId', stampId);
                 setTool('stamp');

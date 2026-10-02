@@ -1,6 +1,6 @@
 /** UI-only state: tool, panels, zoom, dialogs, toasts, search, busy overlay. */
 import { create } from 'zustand';
-import type { ObjectId, SearchMatch, ShapeKind, StampObject } from '../core/types';
+import type { AnyObject, ObjectId, SearchMatch, ShapeKind } from '../core/types';
 import type { ToolId } from '../core/constants';
 import { clamp } from '../core/utils';
 
@@ -104,7 +104,8 @@ interface UIState {
   spelling: boolean;
   statusMessage: string;
   collapsed: { left: boolean; right: boolean };
-  previewStamp: StampObject | null;
+  /** A prepared object (signature, custom stamp) waiting for a click to be placed. */
+  previewStamp: AnyObject | null;
 
   setTool: (tool: ToolId) => void;
   setToolOption: <K extends keyof ToolOptions>(key: K, value: ToolOptions[K]) => void;
@@ -134,7 +135,7 @@ interface UIState {
   setSearchOptions: (options: Partial<UIState['searchOptions']>) => void;
   setStatusMessage: (message: string) => void;
   toggleCollapsed: (side: 'left' | 'right') => void;
-  setPreviewStamp: (stamp: StampObject | null) => void;
+  setPreviewStamp: (stamp: AnyObject | null) => void;
 }
 
 const defaultOptions = (): ToolOptions => ({

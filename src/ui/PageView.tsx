@@ -485,6 +485,31 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     }
 
     if (tool === 'signature') {
+      const preview = useUI.getState().previewStamp;
+      if (preview?.kind === 'signature') {
+        // A signature asset was prepared in the Fill & sign dialog: drop it here.
+        const w = preview.w || 180;
+        const h = preview.h || 56;
+        const id = uid('obj');
+        addObject({
+          ...preview,
+          id,
+          pageId: entry.id,
+          kind: 'signature',
+          x: startPdf.x - w / 2,
+          y: startPdf.y - h / 2,
+          w,
+          h,
+          rotation: 0,
+          opacity: preview.opacity ?? 1,
+          createdAt: Date.now(),
+        } as AnyObject);
+        useUI.getState().setPreviewStamp(null);
+        setSelection([id]);
+        setRightPanel('properties');
+        setToolAfterCreate();
+        return;
+      }
       openDialog('sign', { pageId: entry.id, x: startPdf.x, y: startPdf.y });
       return;
     }

@@ -952,7 +952,7 @@ export const SignDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ o
         signer: typed,
         rule: false,
         style: { fontFamily: font, fontSize: 26, color },
-      } as never);
+      });
     } else {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -971,7 +971,7 @@ export const SignDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ o
         assetId: asset.id,
         rule: true,
         signer: useDoc.getState().meta.author,
-      } as never);
+      });
     }
     useUI.getState().setTool('signature');
     ui.toast('info', 'Click on the page to place your signature.');

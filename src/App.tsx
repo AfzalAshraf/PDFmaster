@@ -28,7 +28,6 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 
   componentDidCatch(error: Error): void {
-    // eslint-disable-next-line no-console
     console.error('PDFmaster crashed:', error);
   }
 
