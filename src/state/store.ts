@@ -434,11 +434,14 @@ export const useDoc = create<DocState>((set, get) => {
     reversePages: () =>
       mutate('Reverse pages', (state) => ({ pages: normalizePages([...state.pages].reverse()) })),
 
-    syncPageDims: (id, dims) =>
-      // Geometry discovered from the PDF itself: not an undoable user action.
+    syncPageDims: (id, dims) => {
+      // Geometry discovered from the PDF itself: not an undoable user action,
+      // but it should still reach the autosaved session.
       set((state) => ({
         pages: normalizePages(state.pages.map((p) => (p.id === id ? { ...p, ...dims } : p))),
-      })),
+      }));
+      scheduleAutosave();
+    },
 
     setCrop: (id, rect) =>
       mutate(rect ? 'Crop page' : 'Reset crop', (state) => {
@@ -717,11 +720,35 @@ function buildPageIndex(pages: PageEntry[], objects: AnyObject[]): Record<PageId
 
 /** Debounced autosave: 1.2 s after the last change, everything goes to IndexedDB. */
 let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * Autosave subscription: any document change (that is not itself a save)
+ * schedules a debounced write of the whole session.
+ */
+useDoc.subscribe((state, previous) => {
+  if (state === previous) return;
+  if (!state.dirty) return;
+  if (state.lastSavedAt !== previous.lastSavedAt && state.pages === previous.pages) return;
+  scheduleAutosave();
+});
+
+/** Sessions larger than this are not autosaved (IndexedDB writes get slow). */
+const AUTOSAVE_LIMIT_BYTES = 120 * 1024 * 1024;
+let autosaveWarned = false;
+
 export function scheduleAutosave(): void {
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     const state = useDoc.getState();
     if (!state.pages.length) return;
+    const totalBytes = Object.values(state.sources).reduce((sum, source) => sum + (source.size || 0), 0);
+    if (totalBytes > AUTOSAVE_LIMIT_BYTES) {
+      if (!autosaveWarned) {
+        autosaveWarned = true;
+        console.warn('PDFmaster: this document is too large to autosave — export a copy to keep your work.');
+      }
+      return;
+    }
+    autosaveWarned = false;
     const session = state.toSession();
     saveSession(session)
       .then(() => {

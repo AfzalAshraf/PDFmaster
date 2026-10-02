@@ -550,6 +550,22 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     setDragRect(rect);
   };
 
+  /** Abandons an in-progress drag when the pointer leaves the page surface. */
+  const onSurfacePointerCancel = () => {
+    const state = drag.current;
+    if (state.mode === 'none' && !state.objectId) return;
+    if (state.mode === 'create' && state.createdId) {
+      // A shape/inline object was already created during the drag: keep it.
+      drag.current = { mode: 'none', startScreen: { x: 0, y: 0 }, startPdf: { x: 0, y: 0 } };
+      return;
+    }
+    if (state.mode === 'move' || state.mode === 'resize' || state.mode === 'rotate') {
+      useDoc.getState().undo();
+    }
+    drag.current = { mode: 'none', startScreen: { x: 0, y: 0 }, startPdf: { x: 0, y: 0 } };
+    setDragRect(null);
+  };
+
   const onSurfacePointerUp = async (event: React.PointerEvent) => {
     const state = drag.current;
     const endPdf = toPdf(event.clientX, event.clientY);
@@ -898,10 +914,27 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       <div
         ref={pageRef}
         className="pm-page-shadow relative bg-white"
-        style={{ width, height }}
+        // pdf.js sizes its text/annotation layers from these custom properties
+        // (they are normally provided by its own viewer shell).
+        style={{
+          width,
+          height,
+          ['--scale-factor' as string]: String(zoom),
+          ['--total-scale-factor' as string]: String(zoom),
+          ['--user-unit' as string]: '1',
+          ['--scale-round-x' as string]: '1px',
+          ['--scale-round-y' as string]: '1px',
+        } as React.CSSProperties}
         onPointerDown={tool === 'select' || tool === 'hand' || tool === 'eraser' || tool === 'editText' ? onSurfacePointerDown : undefined}
       >
         <canvas ref={canvasRef} className="block" style={{ width, height }} />
+        {entry.mediaWidth === 0 ? (
+          <div className="pm-skeleton pointer-events-none absolute inset-0 z-[8]">
+            <div className="absolute left-6 top-6 h-3 w-2/5 rounded bg-white/5" />
+            <div className="absolute left-6 top-14 h-2 w-3/5 rounded bg-white/5" />
+            <div className="absolute left-6 top-20 h-2 w-1/2 rounded bg-white/5" />
+          </div>
+        ) : null}
         {/* existing PDF text (selectable) */}
         {showTextLayer ? <div ref={textLayerRef} className="textLayer" /> : null}
         {/* existing PDF annotations & form widgets */}
@@ -998,9 +1031,7 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
             onPointerDown={onSurfacePointerDown}
             onPointerMove={onSurfacePointerMove}
             onPointerUp={onSurfacePointerUp}
-            onPointerLeave={(event) => {
-              if (drag.current.mode === 'create') onSurfacePointerUp(event);
-            }}
+            onPointerLeave={onSurfacePointerCancel}
           />
         ) : null}
 

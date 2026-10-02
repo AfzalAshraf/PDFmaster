@@ -108,6 +108,18 @@ describe('UI shell', () => {
     unmount();
   });
 
+  it('mounts page components even before the page geometry is known', async () => {
+    // Regression guard: PageView is what discovers the real page size and
+    // reports it to the store, so the viewer must not wait for it.
+    await loadBlankDocument();
+    const entry = useDoc.getState().pages[0];
+    expect(entry.mediaWidth).toBe(0);
+    const { html, unmount } = renderApp();
+    expect(html).toContain(`data-page-id="${entry.id}"`);
+    expect(html).toContain('pm-skeleton');
+    unmount();
+  });
+
   it('builds a PDF from the UI store (end to end)', async () => {
     await loadBlankDocument();
     useDoc.getState().addObject({

@@ -16,7 +16,7 @@ import { Dialogs } from './ui/Dialogs';
 import { CommandPalette } from './ui/CommandPalette';
 import { BusyOverlay, ToastStack } from './ui/primitives';
 import { HomeView } from './ui/HomeView';
-import { importFiles } from './ui/actions';
+import { importFiles, restoreAutosavedSession } from './ui/actions';
 import { loadPreferences, savePreferences } from './core/storage';
 
 /** Keeps a component crash from taking the whole workspace down. */
@@ -75,6 +75,33 @@ const App: React.FC = () => {
   const collapsed = useUI((s) => s.collapsed);
   const [dragging, setDragging] = useState(false);
   const [ready, setReady] = useState(false);
+
+  /* Crash recovery: reopen the autosaved session, if there is one. */
+  useEffect(() => {
+    let cancelled = false;
+    void restoreAutosavedSession().then((restored) => {
+      if (cancelled || !restored) return;
+      useUI.getState().toast('info', 'Your previous session was restored.', {
+        label: 'Start empty',
+        run: () => useDoc.getState().reset(),
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* Warn before leaving with unsaved changes. */
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const doc = useDoc.getState();
+      if (!doc.dirty || !doc.pages.length) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
 
   /* Restore panel/zoom preferences (not the document itself). */
   useEffect(() => {

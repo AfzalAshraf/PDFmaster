@@ -3,14 +3,12 @@ import { FilePlus2, FolderOpen, Loader2, ScanText } from 'lucide-react';
 import { useDoc } from '../state/store';
 import { useUI } from '../state/ui';
 import { PageView } from './PageView';
-import { PageSkeleton } from './PageSkeleton';
 import { Button } from './primitives';
 import { openFilesFromPicker } from './actions';
 
 export const Viewer: React.FC = () => {
   const pages = useDoc((s) => s.pages);
   const sources = useDoc((s) => s.sources);
-  const zoom = useUI((s) => s.zoom);
   const setZoom = useUI((s) => s.setZoom);
   const fitMode = useUI((s) => s.fitMode);
   const scrollToPage = useUI((s) => s.scrollToPage);
@@ -116,11 +114,9 @@ export const Viewer: React.FC = () => {
         {activePages.map((entry) => {
           const source = sources[entry.sourceId];
           if (!source) return null;
-          return entry.mediaWidth === 0 ? (
-            <PageSkeleton key={entry.id} entry={entry} zoom={zoom} />
-          ) : (
-            <PageView key={entry.id} entry={entry} index={entry.index} source={source} />
-          );
+          // PageView discovers the real page geometry and reports it to the
+          // store, so it must mount even before the size is known.
+          return <PageView key={entry.id} entry={entry} index={entry.index} source={source} />;
         })}
         <div className="h-16" />
       </div>
