@@ -105,22 +105,24 @@ const App: React.FC = () => {
 
   /* Restore panel/zoom preferences (not the document itself). */
   useEffect(() => {
-    void loadPreferences().then((prefs) => {
-      if (!prefs) {
+    void loadPreferences()
+      .catch(() => undefined)
+      .then((prefs) => {
+        if (!prefs) {
+          setReady(true);
+          return;
+        }
+        useUI.setState({
+          zoom: prefs.zoom ?? 1,
+          fitMode: prefs.fitMode ?? 'width',
+          leftPanel: (prefs.leftPanel as typeof leftPanel) ?? 'thumbs',
+          rightPanel: (prefs.rightPanel as typeof rightPanel) ?? 'tools',
+          collapsed: prefs.collapsed ?? { left: false, right: false },
+          showAnnotations: prefs.showAnnotations ?? true,
+          showTextLayer: prefs.showTextLayer ?? true,
+        });
         setReady(true);
-        return;
-      }
-      useUI.setState({
-        zoom: prefs.zoom ?? 1,
-        fitMode: prefs.fitMode ?? 'width',
-        leftPanel: (prefs.leftPanel as typeof leftPanel) ?? 'thumbs',
-        rightPanel: (prefs.rightPanel as typeof rightPanel) ?? 'tools',
-        collapsed: prefs.collapsed ?? { left: false, right: false },
-        showAnnotations: prefs.showAnnotations ?? true,
-        showTextLayer: prefs.showTextLayer ?? true,
       });
-      setReady(true);
-    });
   }, []);
 
   /* Persist preferences on change (debounced by the browser's idle queue). */

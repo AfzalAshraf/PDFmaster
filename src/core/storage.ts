@@ -25,6 +25,46 @@ import type {
 const SESSION_KEY = 'pdfmaster.session.v1';
 const RECENTS_KEY = 'pdfmaster.recents.v1';
 
+/**
+ * IndexedDB is not available everywhere (private windows, hardened browsers,
+ * test environments). Everything falls back to an in-memory store so the app
+ * keeps working — persistence is a convenience, never a requirement.
+ */
+const memory = new Map<string, unknown>();
+let idbUnavailable = false;
+
+async function readKey<T>(key: string): Promise<T | undefined> {
+  if (idbUnavailable) return memory.get(key) as T | undefined;
+  try {
+    const value = await get<T>(key);
+    if (value === undefined) return memory.get(key) as T | undefined;
+    return value;
+  } catch {
+    idbUnavailable = true;
+    return memory.get(key) as T | undefined;
+  }
+}
+
+async function writeKey<T>(key: string, value: T): Promise<void> {
+  memory.set(key, value);
+  if (idbUnavailable) return;
+  try {
+    await set(key, value);
+  } catch {
+    idbUnavailable = true;
+  }
+}
+
+async function deleteKey(key: string): Promise<void> {
+  memory.delete(key);
+  if (idbUnavailable) return;
+  try {
+    await del(key);
+  } catch {
+    idbUnavailable = true;
+  }
+}
+
 export interface SavedSession {
   version: 1;
   savedAt: number;
@@ -70,37 +110,37 @@ export interface Preferences {
 const PREFS_KEY = 'pdfmaster.prefs.v1';
 
 export async function savePreferences(prefs: Preferences): Promise<void> {
-  await set(PREFS_KEY, prefs);
+  await writeKey(PREFS_KEY, prefs);
 }
 
 export async function loadPreferences(): Promise<Preferences | undefined> {
-  return get<Preferences>(PREFS_KEY);
+  return readKey<Preferences>(PREFS_KEY);
 }
 
 export async function saveSession(session: SavedSession): Promise<void> {
-  await set(SESSION_KEY, session);
+  await writeKey(SESSION_KEY, session);
 }
 
 export async function loadSession(): Promise<SavedSession | undefined> {
-  const session = await get<SavedSession>(SESSION_KEY);
+  const session = await readKey<SavedSession>(SESSION_KEY);
   if (!session || session.version !== 1) return undefined;
   return session;
 }
 
 export async function clearSession(): Promise<void> {
-  await del(SESSION_KEY);
+  await deleteKey(SESSION_KEY);
 }
 
 export async function addRecent(entry: RecentFile): Promise<void> {
-  const list = (await get<RecentFile[]>(RECENTS_KEY)) ?? [];
+  const list = (await readKey<RecentFile[]>(RECENTS_KEY)) ?? [];
   const next = [entry, ...list.filter((r) => r.name !== entry.name)].slice(0, 12);
-  await set(RECENTS_KEY, next);
+  await writeKey(RECENTS_KEY, next);
 }
 
 export async function listRecents(): Promise<RecentFile[]> {
-  return (await get<RecentFile[]>(RECENTS_KEY)) ?? [];
+  return (await readKey<RecentFile[]>(RECENTS_KEY)) ?? [];
 }
 
 export async function clearRecents(): Promise<void> {
-  await del(RECENTS_KEY);
+  await deleteKey(RECENTS_KEY);
 }
