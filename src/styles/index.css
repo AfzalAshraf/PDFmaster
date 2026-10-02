@@ -1,0 +1,297 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --pm-accent: #ff4a3d;
+  --pm-text-layer: rgba(0, 0, 0, 0);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4b52 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3b41;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #55565e;
+  background-clip: content-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #4a4b52;
+  border-radius: 3px;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -6px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #e7e7ea;
+  border: 1px solid #16171a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+input[type='range']::-moz-range-track {
+  height: 3px;
+  background: #4a4b52;
+  border-radius: 3px;
+}
+input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e7e7ea;
+  border: 1px solid #16171a;
+}
+
+input[type='color'] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type='color']::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+}
+input[type='checkbox'] {
+  accent-color: var(--pm-accent);
+}
+
+.pm-focus-ring:focus-visible {
+  outline: 2px solid var(--pm-accent);
+  outline-offset: 1px;
+}
+
+.pm-panel {
+  @apply border border-ink-700/70 bg-ink-850;
+}
+.pm-divider {
+  @apply h-px w-full bg-ink-700/70;
+}
+
+/* ---------------- pdf.js text layer (selection + highlighting) ---------- */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+}
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.textLayer span.markedContent {
+  top: 0;
+  height: 0;
+}
+.textLayer ::selection {
+  background: rgba(47, 137, 255, 0.35);
+}
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+}
+.textLayer.selecting .endOfContent {
+  top: 0;
+}
+
+/* ---------------- pdf.js annotation layer (links + existing forms) ------ */
+.annotationLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.annotationLayer section {
+  position: absolute;
+  pointer-events: auto;
+  text-align: initial;
+  box-sizing: border-box;
+  transform-origin: 0 0;
+  cursor: pointer;
+}
+.annotationLayer .linkAnnotation > a {
+  position: absolute;
+  font-size: 1em;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+.annotationLayer .linkAnnotation > a:hover {
+  background: rgba(47, 137, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(47, 137, 255, 0.5);
+}
+.annotationLayer .buttonWidgetAnnotation input,
+.annotationLayer .buttonWidgetAnnotation button,
+.annotationLayer .textWidgetAnnotation input,
+.annotationLayer .textWidgetAnnotation textarea,
+.annotationLayer .choiceWidgetAnnotation select {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  color: #111;
+  font-size: 10px;
+  padding: 0 2px;
+  box-sizing: border-box;
+}
+.annotationLayer .textWidgetAnnotation textarea {
+  resize: none;
+}
+.annotationLayer .buttonWidgetAnnotation.checkBox input,
+.annotationLayer .buttonWidgetAnnotation.radioButton input {
+  width: 100%;
+  height: 100%;
+}
+.annotationLayer .popupAnnotation,
+.annotationLayer .popupWrapper {
+  display: none;
+}
+
+/* ---------------- utility bits ------------------------------------------ */
+.pm-viewer {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    radial-gradient(rgba(0, 0, 0, 0.35) 1px, transparent 1px);
+  background-size: 24px 24px, 24px 24px;
+  background-position: 0 0, 12px 12px;
+}
+
+.pm-hint {
+  font-size: 11px;
+  line-height: 16px;
+  color: #8b8c94;
+  white-space: nowrap;
+}
+
+.pm-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 4px;
+  background: #2c2d32;
+}
+
+/* ---------------- page & object chrome ---------------------------------- */
+.pm-page-shadow {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 12px 32px rgba(0, 0, 0, 0.42);
+}
+
+.pm-object-selected {
+  outline: 1.5px solid var(--pm-accent);
+  outline-offset: 1px;
+}
+
+.pm-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border: 1.5px solid var(--pm-accent);
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.pm-skeleton {
+  background: linear-gradient(90deg, #26272b 25%, #313237 37%, #26272b 63%);
+  background-size: 500px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -500px 0;
+  }
+  100% {
+    background-position: 500px 0;
+  }
+}
+
+.pm-checkerboard {
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+  .pm-no-print {
+    display: none !important;
+  }
+  .pm-page-shadow {
+    box-shadow: none;
+  }
+}

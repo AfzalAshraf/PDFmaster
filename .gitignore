@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-ssr
+dev-dist
+coverage
+*.local
+.DS_Store
+.vite
+*.log
+.arena
+screenshots
+e2e-results
+playwright-report
+test-results
