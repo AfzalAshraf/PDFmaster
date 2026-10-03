@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { getDesktopBridge } from './desktop';
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -123,7 +124,7 @@ export function sanitizeFilename(name: string, fallback = 'document'): string {
 
 export function downloadBlob(data: BlobPart, filename: string, mime = 'application/pdf'): void {
   const blob = data instanceof Blob ? data : new Blob([data], { type: mime });
-  downloadBlobObject(blob, filename);
+  void downloadBlobObject(blob, filename);
 }
 
 /** Uint8Array -> Blob without copying pitfalls across ArrayBufferLike variants. */
@@ -131,7 +132,13 @@ export function bytesToBlob(bytes: Uint8Array, type: string): Blob {
   return new Blob([bytes.slice().buffer as ArrayBuffer], { type });
 }
 
-export function downloadBlobObject(blob: Blob, filename: string): void {
+export async function downloadBlobObject(blob: Blob, filename: string): Promise<boolean> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    const bytes = await blob.arrayBuffer();
+    return desktop.saveFile(filename, bytes);
+  }
+
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -141,6 +148,7 @@ export function downloadBlobObject(blob: Blob, filename: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+  return true;
 }
 
 export async function blobToUint8(blob: Blob): Promise<Uint8Array> {

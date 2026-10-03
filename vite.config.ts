@@ -72,6 +72,9 @@ function pdfjsDevAssets(): Plugin {
 }
 
 export default defineConfig({
+  // Keep generated asset URLs relative so the same Vite build works from the
+  // desktop app's private `app://` origin as well as a normal web server.
+  base: './',
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },

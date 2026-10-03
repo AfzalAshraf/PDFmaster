@@ -24,6 +24,14 @@ export default tseslint.config(
     },
   },
   {
+    files: ['desktop/**/*.cjs'],
+    languageOptions: { globals: globals.node },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      'no-control-regex': 'off',
+    },
+  },
+  {
     files: ['**/*.{test,spec}.{ts,tsx}', 'src/test/**'],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
   },

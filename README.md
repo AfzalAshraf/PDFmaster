@@ -1,11 +1,12 @@
 # PDFmaster
 
-**A complete, local-first PDF editor that runs entirely in the browser.**
+**A local-first PDF editor for the browser and Windows desktop.**
 
-PDFmaster is an Adobe Acrobat–style workspace for reading, editing, annotating, signing, protecting,
-OCRing and converting PDFs. There is no backend and no upload step: every byte stays in the browser
-tab, which makes it usable for confidential documents, on an aeroplane, or inside an air-gapped
-network.
+PDFmaster is an Acrobat-style workspace for reading, editing, annotating, signing, protecting,
+OCRing and converting PDFs. Use it in a browser/PWA or install the same React interface as a
+standalone Windows app. There is no document server or upload step: files are processed on your
+computer, making it suitable for confidential work and offline use. PDFmaster is an independent,
+MIT-licensed project—not an Adobe product or a promise of complete Acrobat feature parity.
 
 ```
 npm install
@@ -13,6 +14,34 @@ npm run dev      # http://localhost:5173
 npm run build    # type-check + production bundle in dist/
 npm test         # unit + UI smoke tests
 ```
+
+## Windows desktop app
+
+The Windows build packages the existing interface in a hardened Electron shell; no HTML editing,
+separate backend, C++ toolchain or Python runtime is needed. It offers a per-user setup wizard and a
+portable x64 `.exe`. The app uses its own local origin, native save dialogs, opens PDFs from Explorer,
+and keeps documents on the device.
+
+After a Windows release has been published, the easiest verified installer is:
+
+```powershell
+irm https://raw.githubusercontent.com/AfzalAshraf/PDFmaster/main/scripts/install-windows.ps1 | iex
+```
+
+The script downloads the latest GitHub Release installer, checks its published SHA-256 checksum,
+then opens the setup wizard. To download and run the installer directly with `curl.exe` instead:
+
+```powershell
+curl.exe -fL https://github.com/AfzalAshraf/PDFmaster/releases/latest/download/PDFmaster-Setup.exe -o "$env:TEMP\PDFmaster-Setup.exe"
+Start-Process -FilePath "$env:TEMP\PDFmaster-Setup.exe" -Wait
+```
+
+Direct download skips the script's checksum verification. Windows builds are not code-signed yet, so
+SmartScreen may show an unfamiliar-publisher warning. Merging a new version of `package.json` to
+`main` automatically builds and publishes that version's installer; pushing a matching `v*` tag also
+works. After the first successful release, the curl installer link will work. To build locally on
+Windows, run `npm ci` then `npm run desktop:win`; outputs go to `desktop-dist/`. `npm run desktop`
+builds the web assets and launches the desktop shell.
 
 ---
 
@@ -79,7 +108,10 @@ npm test         # unit + UI smoke tests
 - Split exports (multi-file ZIP) and print via a temporary PDF fed to the browser's print dialog.
 
 ### Platform
-- Installable PWA: works offline, caches pdf.js assets, fonts and OCR language data.
+- Installable PWA for the browser plus a Windows x64 desktop installer and portable `.exe` built
+  from the same interface; the desktop installer is created by GitHub Actions on version tags.
+- Native desktop save dialogs, PDF file association/open-from-Explorer support, and a minimal,
+  context-isolated Electron bridge. The renderer has no Node.js access.
 - Autosave to IndexedDB with crash/first-run recovery, recent documents list, editable project
   files (`.pdfmaster.json`) that survive a reload with all sources embedded.
 - Dark and light themes, keyboard shortcuts for everything, accessible focus states.
@@ -111,6 +143,12 @@ src/
   state/           zustand stores: document (undo/redo) and UI (panels, tools, dialogs)
   ui/              the Acrobat-style workspace: menu bar, toolbar, rails, panels, dialogs
   hooks/           keyboard shortcuts, theme
+desktop/
+  main.cjs         hardened Electron window, app:// asset origin, native open/save and PDF file handling
+  preload.cjs      small, allow-listed desktop bridge (no renderer Node access)
+  build/icon.ico   Windows application/installer icon
+scripts/
+  install-windows.ps1  downloads the latest release and verifies its SHA-256 before setup
 ```
 
 ### Design decisions worth knowing
@@ -129,7 +167,7 @@ src/
 
 - Editing text inside a PDF works on the Unicode text layer: runs whose glyph encoding cannot be
   mapped back to Unicode are reported as failed rather than corrupted.
-- Encryption protects the **exported** file; the working copy stays in memory unencrypted.
+- Encryption protects the **exported** file; the in-memory working copy and local autosave are not encrypted by that setting.
 - Digital signatures are applied to the exported bytes — the in-app copy keeps changing until you
   export.
 - Office exports reproduce text and page structure, not pixel-perfect layout.
@@ -138,9 +176,10 @@ src/
 
 ## Privacy
 
-No accounts, no telemetry, no upload endpoints, no CDN calls at runtime (fonts, pdf.js assets and
-OCR language data all ship with the app). Open the network tab while you edit: the only requests are
-for the app's own static files.
+No accounts, telemetry, document-upload endpoint or PDF server: editing and exports run on your
+computer. The UI, pdf.js assets and fonts ship with the app. OCR downloads the selected Tesseract
+language data the first time it is used; Tesseract caches it locally for later use. Regular PDF
+editing does not need a network connection.
 
 ## License
 
