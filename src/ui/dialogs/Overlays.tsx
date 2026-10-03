@@ -868,7 +868,7 @@ export const OcrDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ op
           <Slider label="Render scale" min={1} max={4} step={0.2} value={scale} onChange={setScale} suffix="×" />
           <div className="rounded-md border border-ink-700 bg-ink-800/40 p-2 text-2xs leading-4 text-ink-400">
             <p>{scope === 'all' ? pages.length : targets.length} page(s) will be processed.</p>
-            <p className="mt-1">Language data is stored in the browser, so recognition also works offline after the first run.</p>
+            <p className="mt-1">Language data is cached locally, so recognition can work offline after the first download.</p>
           </div>
           {busy.active ? (
             <div className="space-y-1">
@@ -1154,9 +1154,14 @@ export const DigitalSignDialog: React.FC<{ open: boolean; onClose: () => void }>
                   signingTime: new Date(),
                   widgetRect: { x: 36, y: 36, w: 180, h: 60 },
                 });
-                downloadBlobObject(new Blob([signed.slice().buffer as ArrayBuffer], { type: 'application/pdf' }), `${sanitizeFilename(useDoc.getState().docName)}-signed.pdf`);
-                useUI.getState().toast('success', 'Signed PDF downloaded (PAdES, SHA-256).');
-                onClose();
+                const saved = await downloadBlobObject(
+                  new Blob([signed.slice().buffer as ArrayBuffer], { type: 'application/pdf' }),
+                  `${sanitizeFilename(useDoc.getState().docName)}-signed.pdf`,
+                );
+                if (saved) {
+                  useUI.getState().toast('success', 'Signed PDF saved (PAdES, SHA-256).');
+                  onClose();
+                }
               } catch (err) {
                 setError(err instanceof Error ? err.message : 'Signing failed.');
               } finally {

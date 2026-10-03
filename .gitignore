@@ -2,6 +2,8 @@ node_modules
 dist
 dist-ssr
 dev-dist
+desktop-dist
+release
 coverage
 *.local
 .DS_Store

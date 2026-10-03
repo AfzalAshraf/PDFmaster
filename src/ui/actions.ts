@@ -192,7 +192,8 @@ export async function runExport(options: ExportOptions, output?: Partial<ExportO
       { ...request, options },
       (progress, label) => useUI.getState().setBusy({ active: true, label, progress }),
     );
-    downloadBlobObject(result.blob, result.filename);
+    const saved = await downloadBlobObject(result.blob, result.filename);
+    if (!saved) return;
     const warnings = [...result.warnings];
     if (warnings.length) ui.toast('warning', warnings[0]);
     else ui.toast('success', `Exported ${result.filename}`);
@@ -222,8 +223,8 @@ export async function saveSplit(groups: number[][]): Promise<void> {
     const result = await exportSplit(request, groups, (progress, label) =>
       useUI.getState().setBusy({ active: true, label, progress }),
     );
-    downloadBlobObject(result.blob, result.filename);
-    ui.toast('success', `Exported ${result.filename}`);
+    const saved = await downloadBlobObject(result.blob, result.filename);
+    if (saved) ui.toast('success', `Exported ${result.filename}`);
   } catch (err) {
     ui.toast('error', err instanceof Error ? err.message : 'Split failed.');
   } finally {
@@ -322,8 +323,8 @@ export async function restoreAutosavedSession(): Promise<boolean> {
 export async function saveProjectFile(): Promise<void> {
   const session = useDoc.getState().toSession();
   const blob = new Blob([JSON.stringify({ ...session, kind: 'pdfmaster-project' })], { type: 'application/json' });
-  downloadBlobObject(blob, `${sanitizeFilename(useDoc.getState().docName)}.pdfmaster.json`);
-  useDoc.getState().markSaved();
+  const saved = await downloadBlobObject(blob, `${sanitizeFilename(useDoc.getState().docName)}.pdfmaster.json`);
+  if (saved) useDoc.getState().markSaved();
 }
 
 export async function openProjectFile(file: File): Promise<void> {

@@ -4,7 +4,7 @@
  * Supported: PDF (kept as-is), images (PNG/JPEG/WebP/GIF/BMP), plain text,
  * Markdown, CSV/TSV, HTML, JSON/XML — and best-effort text extraction from
  * Office files (DOCX/XLSX/PPTX) so they can be annotated and re-exported.
- * Nothing leaves the browser.
+ * Source files stay on the user's device.
  */
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, hexToRgb, registerFontkit } from './pdflib';

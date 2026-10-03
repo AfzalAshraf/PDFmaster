@@ -5,8 +5,8 @@
  * into PDF user space so the invisible text layer we write at export time lines
  * up exactly with the scanned glyphs underneath.
  *
- * The language data (~10 MB per language) is fetched once and cached by the
- * service worker, so the second run works offline.
+ * Language data (~10 MB per language) is downloaded on first use and cached
+ * locally by Tesseract, so repeat runs can work offline.
  */
 import { createWorker, type Worker } from 'tesseract.js';
 import type { OcrPageResult, OcrWord, SourceDoc } from './types';

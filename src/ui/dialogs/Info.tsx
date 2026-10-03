@@ -498,8 +498,8 @@ export const AboutDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ 
           PDF
         </span>
         <div>
-          <h3 className="text-lg font-semibold text-white">PDFmaster 1.0</h3>
-          <p className="text-2xs text-ink-400">A complete, local-first PDF editor for the web.</p>
+          <h3 className="text-lg font-semibold text-white">PDFmaster</h3>
+          <p className="text-2xs text-ink-400">A local-first PDF editor for browser and desktop.</p>
         </div>
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -526,7 +526,7 @@ export const AboutDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ 
       </ul>
       <p className="flex items-center gap-1.5 rounded-md border border-ink-700 bg-ink-800/50 p-2 text-2xs text-ink-400">
         <Sparkles size={12} strokeWidth={1.75} className="text-accent" />
-        Built with pdf.js, pdf-lib, tesseract.js, @signpdf, React and Vite. Your documents never leave this browser tab.
+        Built with pdf.js, pdf-lib, tesseract.js, @signpdf, React and Vite. Documents stay on your device; PDFmaster is an independent project, not affiliated with Adobe.
       </p>
     </div>
   </Modal>

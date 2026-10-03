@@ -19,6 +19,8 @@ jobs:
         run: npm run typecheck
       - name: Lint
         run: npm run lint
+      - name: Check desktop shell syntax
+        run: node --check desktop/main.cjs && node --check desktop/preload.cjs
       - name: Tests
         run: npm test
       - name: Build

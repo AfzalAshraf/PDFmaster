@@ -136,8 +136,8 @@ const EmptyWorkspace: React.FC<{ onOpen: () => void; onBlank: () => void; onOcr:
       </div>
       <h2 className="text-xl font-semibold text-white">Start with a document</h2>
       <p className="mx-auto mt-2 max-w-md text-base leading-6 text-ink-300">
-        Open a PDF, drop files anywhere on this window, or create a blank document. PDFmaster runs entirely in your
-        browser — nothing is uploaded.
+        Open a PDF, drop files anywhere on this window, or create a blank document. PDFmaster runs locally on your
+        device — nothing is uploaded.
       </p>
       <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
         <Button variant="primary" icon={FolderOpen} onClick={onOpen}>

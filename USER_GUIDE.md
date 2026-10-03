@@ -1,8 +1,8 @@
 # PDFmaster user guide
 
-Everything below happens inside your browser. There is no sign-in, no upload and no server: closing
-the tab discards the working document unless you exported it or the autosave keeps it (see
-*Recovering your work*).
+PDFmaster runs locally in a browser/PWA or the standalone Windows desktop app. There is no sign-in,
+no document upload and no PDF server. Closing the app discards the in-memory working document unless
+you exported it or autosave recovered it (see *Recovering your work*).
 
 ---
 
@@ -16,7 +16,7 @@ the tab discards the working document unless you exported it or the autosave kee
 | Start from scratch | **File ▸ New blank document…** (choose A4/Letter/… or a custom size) |
 | Reopen a previous session | The recent documents list on the home screen, or `Ctrl+O` for an autosaved session |
 
-Password-protected PDFs prompt for the password; nothing is cached outside the tab.
+Password-protected PDFs prompt for the password. Autosave, when enabled, is stored locally but is not encrypted—see *Recovering your work* before using a shared device.
 
 ## 2. Finding your way around the workspace
 
@@ -85,7 +85,7 @@ copied out of the file by a recipient.
 **Passwords & permissions** — **Protect ▸ Password & permissions…**: set a user password (needed to
 open) and an owner password (needed to change permissions), choose AES-256, and allow or deny
 printing, copying, modifying, annotating, form filling, accessibility and assembly. Encryption is
-applied when the file is exported.
+applied when the file is exported; the local working copy/autosave is not encrypted by this setting.
 
 **Digital signatures** — **Protect ▸ Digital signature…**: pick a `.p12`/`.pfx` certificate, enter
 its passphrase, add a reason/location, and the exported bytes are signed with a detached PKCS#7
@@ -123,8 +123,8 @@ and hands it to the browser's print dialog.
 
 ## 10. Recovering your work
 
-PDFmaster autosaves the whole session to this browser's IndexedDB a second after your last change
-(watch the dot in the status bar). If the tab crashes or you accidentally close it, the recent
+PDFmaster autosaves the whole session to this app's local IndexedDB a second after your last change
+(watch the dot in the status bar). If the app crashes or you accidentally close it, the recent
 documents list on the home screen restores it.
 
 **File ▸ Save editable project…** writes a `.pdfmaster.json` containing the structure *and* the
@@ -152,8 +152,31 @@ embedded sources, so a project can be moved to another machine and reopened exac
 
 ## 12. Installing it as an app
 
-Use your browser's *Install* / *Add to Home Screen* action. PDFmaster then launches in its own
-window and keeps working with no network connection.
+### Windows desktop
+
+After a Windows release is published, run this in PowerShell to download the latest installer, verify
+its SHA-256 checksum, and open the setup wizard:
+
+```powershell
+irm https://raw.githubusercontent.com/AfzalAshraf/PDFmaster/main/scripts/install-windows.ps1 | iex
+```
+
+Or fetch the installer with `curl.exe` and run it yourself:
+
+```powershell
+curl.exe -fL https://github.com/AfzalAshraf/PDFmaster/releases/latest/download/PDFmaster-Setup.exe -o "$env:TEMP\PDFmaster-Setup.exe"
+Start-Process -FilePath "$env:TEMP\PDFmaster-Setup.exe" -Wait
+```
+
+The direct `curl.exe` route does not verify the checksum. The installer is not code-signed yet, so
+Windows SmartScreen may show an unfamiliar-publisher warning. If no release is published yet, build
+on a Windows x64 machine with `npm ci` followed by `npm run desktop:win`; find the installer and
+portable app in `desktop-dist/`.
+
+### Browser / PWA
+
+Use your browser's *Install* / *Add to Home Screen* action. PDFmaster launches in its own window and
+keeps working offline after the app files have been cached.
 
 ## 13. Troubleshooting
 

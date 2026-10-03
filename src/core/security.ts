@@ -61,4 +61,4 @@ export function passwordStrength(pw: string): PasswordStrength {
 }
 
 export const INTEGRITY_NOTE =
-  'Everything in PDFmaster runs locally in your browser. Files are never uploaded to a server.';
+  'Everything in PDFmaster runs locally on your device. Files are never uploaded to a server.';

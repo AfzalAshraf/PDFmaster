@@ -46,8 +46,8 @@ export const HomeView: React.FC = () => {
           </div>
           <h1 className="text-3xl font-semibold tracking-tight text-white">PDFmaster</h1>
           <p className="mx-auto mt-2 max-w-xl text-base leading-6 text-ink-300">
-            The complete PDF editor that runs entirely in your browser. Edit, annotate, protect, OCR and export — your
-            files never leave this device.
+            A powerful PDF editor that runs on your device. Edit, annotate, protect, OCR and export — your files never
+            leave this device.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
             <Button variant="primary" icon={FolderOpen} onClick={() => void openFilesFromPicker(true)}>
@@ -137,7 +137,7 @@ export const HomeView: React.FC = () => {
 
         <section className="mt-12 grid gap-3 sm:grid-cols-3">
           {[
-            { icon: HardDrive, title: 'Local-first', body: 'Documents live in memory and, when you autosave, in this browser’s IndexedDB.' },
+            { icon: HardDrive, title: 'Local-first', body: 'Documents stay in memory and autosave to this installation’s local IndexedDB.' },
             { icon: Shield, title: 'Private by design', body: 'No accounts, no telemetry, no upload endpoints — open the network tab and check.' },
             { icon: WifiOff, title: 'Installable', body: 'Add PDFmaster to your desktop or home screen and use it without a connection.' },
           ].map((item) => (

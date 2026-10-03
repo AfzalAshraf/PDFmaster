@@ -16,7 +16,8 @@ import { Dialogs } from './ui/Dialogs';
 import { CommandPalette } from './ui/CommandPalette';
 import { BusyOverlay, ToastStack } from './ui/primitives';
 import { HomeView } from './ui/HomeView';
-import { importFiles, restoreAutosavedSession } from './ui/actions';
+import { importFiles, openProjectFile, restoreAutosavedSession } from './ui/actions';
+import { getDesktopBridge } from './core/desktop';
 import { loadPreferences, savePreferences } from './core/storage';
 
 /** Keeps a component crash from taking the whole workspace down. */
@@ -76,18 +77,76 @@ const App: React.FC = () => {
   const [dragging, setDragging] = useState(false);
   const [ready, setReady] = useState(false);
 
-  /* Crash recovery: reopen the autosaved session, if there is one. */
+  /* Crash recovery plus files opened from Windows Explorer in the desktop build. */
   useEffect(() => {
     let cancelled = false;
-    void restoreAutosavedSession().then((restored) => {
-      if (cancelled || !restored) return;
-      useUI.getState().toast('info', 'Your previous session was restored.', {
-        label: 'Start empty',
-        run: () => useDoc.getState().reset(),
-      });
+    let sessionRecovered = false;
+    let draining = false;
+    let drainAgain = false;
+    const desktop = getDesktopBridge();
+
+    const drainDesktopFiles = async () => {
+      if (!desktop || !sessionRecovered || cancelled) return;
+      if (draining) {
+        drainAgain = true;
+        return;
+      }
+      draining = true;
+      try {
+        do {
+          drainAgain = false;
+          const pending = await desktop.takePendingFiles();
+          if (cancelled || !pending.length) continue;
+
+          const asFile = (entry: (typeof pending)[number]) => {
+            const buffer = entry.bytes.buffer.slice(
+              entry.bytes.byteOffset,
+              entry.bytes.byteOffset + entry.bytes.byteLength,
+            ) as ArrayBuffer;
+            return new File([buffer], entry.name, { type: 'application/octet-stream' });
+          };
+          let sourceFiles: File[] = [];
+          const openSources = async () => {
+            if (!sourceFiles.length) return;
+            const files = sourceFiles;
+            sourceFiles = [];
+            await importFiles(files, { replace: true });
+          };
+
+          for (const entry of pending) {
+            const file = asFile(entry);
+            if (entry.name.toLowerCase().endsWith('.pdfmaster.json')) {
+              await openSources();
+              await openProjectFile(file);
+            } else {
+              sourceFiles.push(file);
+            }
+          }
+          await openSources();
+        } while (drainAgain && !cancelled);
+      } catch (error) {
+        useUI.getState().toast('error', error instanceof Error ? error.message : 'Could not open the selected file.');
+      } finally {
+        draining = false;
+      }
+    };
+
+    const unsubscribe = desktop?.onFilesAvailable(() => void drainDesktopFiles());
+    void restoreAutosavedSession().then(async (restored) => {
+      if (cancelled) return;
+      if (restored) {
+        useUI.getState().toast('info', 'Your previous session was restored.', {
+          label: 'Start empty',
+          run: () => useDoc.getState().reset(),
+        });
+      }
+      sessionRecovered = true;
+      await drainDesktopFiles();
     });
+
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
   }, []);
 
