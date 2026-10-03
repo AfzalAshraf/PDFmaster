@@ -37,18 +37,11 @@ Start-Process -FilePath "$env:TEMP\PDFmaster-Setup.exe" -Wait
 ```
 
 Direct download skips the script's checksum verification. Windows builds are not code-signed yet, so
-SmartScreen may show an unfamiliar-publisher warning. The release workflow creates the installer and
-portable executable when a `v*` version tag is pushed; the curl installer link works after the first
-successful release. After merging this version to the default branch, the repository owner can publish
-the first build with:
-
-```sh
-git tag v1.2.0
-git push origin v1.2.0
-```
-
-To build locally on Windows, run `npm ci` then `npm run desktop:win`; outputs go to `desktop-dist/`.
-`npm run desktop` builds the web assets and launches the desktop shell.
+SmartScreen may show an unfamiliar-publisher warning. Merging a new version of `package.json` to
+`main` automatically builds and publishes that version's installer; pushing a matching `v*` tag also
+works. After the first successful release, the curl installer link will work. To build locally on
+Windows, run `npm ci` then `npm run desktop:win`; outputs go to `desktop-dist/`. `npm run desktop`
+builds the web assets and launches the desktop shell.
 
 ---
 
