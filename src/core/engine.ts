@@ -10,6 +10,8 @@ import { PDFDocument, PDFPage, degrees, hexToRgb, pdfLib, registerFontkit } from
 import { drawObject, drawTextBlock, drawWatermark, type DrawContext } from './draw';
 import { addLinkAnnotation, addMarkupAnnotation, addNoteAnnotation, createFormField } from './annotations';
 import { applyPageEdits, type PaintedText } from './textedit';
+import { coverRectForWord, planOcrReplacements } from './ocr';
+import { sanitizeForStandardFont, fontForStyle } from './pdflib';
 import type {
   AnyObject,
   Asset,
@@ -19,6 +21,7 @@ import type {
   DocumentMeta,
   HeaderFooterSettings,
   OcrPageResult,
+  OcrWord,
   PageEntry,
   PageId,
   Rect,
@@ -27,7 +30,7 @@ import type {
   TextEditOp,
   WatermarkSettings,
 } from './types';
-import { sanitizeFilename } from './utils';
+import { sanitizeFilename, truncate } from './utils';
 
 const { PDFName, PDFNumber, PDFString } = pdfLib;
 
@@ -44,6 +47,8 @@ export interface BuildOptions {
   compress?: boolean;
   /** Embed TrueType fonts for all drawn text. */
   embedFonts?: boolean;
+  /** Write the invisible OCR text layer (default true when OCR data exists). */
+  ocr?: boolean;
   documentJS?: string;
   language?: string;
   author?: string;
@@ -83,6 +88,10 @@ export interface BuildStats {
   editsApplied: number;
   editsFailed: number;
   redactions: number;
+  /** OCR words covered and redrawn with their replacements. */
+  ocrReplaced: number;
+  /** Human-readable reasons for failed edits / replacements ("Page 2: …"). */
+  editErrors: string[];
 }
 
 export interface BuildResult {
@@ -105,7 +114,7 @@ export type ProgressFn = (pct: number, label: string) => void;
 /** Builds the full PDF for the given input and returns its bytes. */
 export async function buildPdf(input: BuildInput, onProgress: ProgressFn = () => {}): Promise<BuildResult> {
   const warnings: string[] = [];
-  const stats: BuildStats = { pages: 0, objects: 0, editsApplied: 0, editsFailed: 0, redactions: 0 };
+  const stats: BuildStats = { pages: 0, objects: 0, editsApplied: 0, editsFailed: 0, redactions: 0, ocrReplaced: 0, editErrors: [] };
   const opts: Required<Pick<BuildOptions, 'keepComments' | 'flattenForms' | 'removeExistingAnnotations' | 'pdfA' | 'compress' | 'embedFonts'>> & BuildOptions = {
     keepComments: false,
     flattenForms: false,
@@ -195,6 +204,9 @@ export async function buildPdf(input: BuildInput, onProgress: ProgressFn = () =>
       stats.editsFailed += res.edit.failed;
       stats.redactions += res.redact.removedTextRuns + res.redact.removedXObjects;
       painted.push(...res.paint);
+      for (const failed of res.edit.failedEdits) {
+        stats.editErrors.push(`Page ${i + 1}: "${truncate(failed.original)}" was not found in the page content.`);
+      }
     }
 
     // 3) Objects (annotations / edits / forms / links)
@@ -214,18 +226,7 @@ export async function buildPdf(input: BuildInput, onProgress: ProgressFn = () =>
       stats.objects += 1;
     }
     for (const text of painted) {
-      drawTextBlock(out, page, {
-        text: text.text,
-        x: text.x,
-        y: text.y,
-        fontSize: text.size,
-        color: text.color,
-        bold: text.bold,
-        italic: text.italic,
-        fontFamily: 'Helvetica',
-        embedFonts: opts.embedFonts || opts.pdfA,
-        rotateDeg: text.rotation,
-      });
+      drawTextReplacement(out, page, text, opts.embedFonts || opts.pdfA);
     }
 
     // 4) Page decorations: watermark, header/footer, numbering, Bates
@@ -273,10 +274,20 @@ export async function buildPdf(input: BuildInput, onProgress: ProgressFn = () =>
       drawAtPosition(out, page, visual, value, input.bates.position, input.bates.fontSize, input.bates.color, input.bates.margin, true, opts.embedFonts || opts.pdfA);
     }
 
-    // 5) OCR text layer (invisible but selectable / searchable)
+    // 5) OCR: word replacements drawn over the scan, then the invisible
+    //    (but selectable / searchable) text layer — skipping replaced words
+    //    so their replacement is not duplicated in the text layer.
     const ocr = input.ocr[entry.id];
     if (ocr?.words?.length) {
-      drawOcrLayer(out, page, ocr);
+      const plan = planOcrReplacements(ocr.words, ocr.replacements ?? []);
+      for (const [wordIndex, item] of plan.replace) {
+        drawOcrReplacement(out, page, ocr.words[wordIndex], item, opts.embedFonts || opts.pdfA);
+        stats.ocrReplaced += 1;
+      }
+      for (const replacement of plan.unmatched) {
+        stats.editErrors.push(`Page ${i + 1}: OCR replacement "${truncate(replacement.original)}" matched no recognised word.`);
+      }
+      if (opts.ocr !== false) drawOcrLayer(out, page, ocr, [...plan.replace.keys()]);
     }
 
     // 6) Strip inherited annotations
@@ -548,12 +559,15 @@ function drawAtPosition(
 /**
  * Invisible (rendering mode 3) text layer produced by OCR: selectable,
  * searchable and copyable, exactly like Acrobat's "Recognize Text".
+ * Words listed in `skip` were replaced with visible text and are left out so
+ * selection does not yield each replacement twice.
  */
-function drawOcrLayer(doc: PDFDocument, page: PDFPage, ocr: OcrPageResult): void {
+function drawOcrLayer(doc: PDFDocument, page: PDFPage, ocr: OcrPageResult, skip: Iterable<number> = []): void {
   const { TextRenderingMode, setTextRenderingMode, pushGraphicsState, popGraphicsState, setCharacterSqueeze } = pdfLib;
   const font = doc.embedStandardFont(pdfLib.StandardFonts.Helvetica);
-  for (const word of ocr.words) {
-    if (!word.text.trim()) continue;
+  const skipped = new Set(skip);
+  ocr.words.forEach((word, index) => {
+    if (skipped.has(index) || !word.text.trim()) return;
     const size = Math.max(3, Math.min(72, word.rect.h * 0.82));
     let natural = 0;
     for (const ch of word.text) natural += font.widthOfTextAtSize(ch, size);
@@ -571,6 +585,87 @@ function drawOcrLayer(doc: PDFDocument, page: PDFPage, ocr: OcrPageResult): void
       /* skip words the standard font cannot encode */
     }
     page.pushOperators(setCharacterSqueeze(100), setTextRenderingMode(TextRenderingMode.Fill), popGraphicsState());
+  });
+}
+
+/**
+ * Draws an OCR word replacement over the scan: a covering box in the sampled
+ * background colour, then the new word as visible, searchable text. The
+ * rendering mode is explicitly forced to "fill" inside a fresh graphics state
+ * so an inherited invisible state cannot hide the replacement.
+ */
+function drawOcrReplacement(
+  doc: PDFDocument,
+  page: PDFPage,
+  word: OcrWord,
+  item: { text: string; bg?: string },
+  embedFonts: boolean,
+): void {
+  const { TextRenderingMode, setTextRenderingMode, pushGraphicsState, popGraphicsState, setCharacterSqueeze } = pdfLib;
+  if (!item.text.trim()) return;
+  const cover = coverRectForWord(word.rect);
+  page.drawRectangle({ x: cover.x, y: cover.y, width: cover.w, height: cover.h, color: hexToRgb(item.bg ?? '#ffffff') });
+  const font = fontForStyle(doc, { fontFamily: 'Helvetica' }, item.text, { embed: embedFonts });
+  const text = sanitizeForStandardFont(item.text, font);
+  const size = Math.max(3, Math.min(72, word.rect.h * 0.82));
+  const natural = font.widthOfTextAtSize(text, size);
+  // Shrink (never stretch) so the replacement fits the word it replaces.
+  const squeeze = natural > word.rect.w ? Math.max(60, (word.rect.w / natural) * 100) : 100;
+  page.pushOperators(pushGraphicsState(), setTextRenderingMode(TextRenderingMode.Fill), setCharacterSqueeze(squeeze));
+  try {
+    page.drawText(text, {
+      x: word.rect.x,
+      y: word.rect.y + word.rect.h * 0.1,
+      size,
+      font,
+      color: hexToRgb('#000000'),
+    });
+  } catch {
+    /* unencodable replacement: the cover still hides the original word */
+  }
+  page.pushOperators(setCharacterSqueeze(100), setTextRenderingMode(TextRenderingMode.Fill), popGraphicsState());
+}
+
+/**
+ * Re-paints a text run that could not be rewritten in place (a replacement
+ * the original font cannot encode, or a run that was invisible — an OCR text
+ * layer over a scan). When the original run was invisible, its raster word is
+ * covered with a background-coloured box first; the replacement is then drawn
+ * with the text rendering mode explicitly reset to "fill" inside a fresh
+ * graphics state, so an inherited invisible state (`Tr 3`) cannot make it
+ * disappear.
+ */
+function drawTextReplacement(doc: PDFDocument, page: PDFPage, painted: PaintedText, embedFonts: boolean): void {
+  const { TextRenderingMode, setTextRenderingMode, pushGraphicsState, popGraphicsState } = pdfLib;
+  const font = fontForStyle(
+    doc,
+    { fontFamily: painted.serif ? 'Times' : 'Helvetica', bold: painted.bold, italic: painted.italic },
+    painted.text,
+    { embed: embedFonts },
+  );
+  const text = sanitizeForStandardFont(painted.text, font);
+  if (painted.cover && Math.abs(painted.rotation) < 1) {
+    const c = painted.cover;
+    page.drawRectangle({ x: c.x, y: c.y, width: c.w, height: c.h, color: hexToRgb(painted.coverColor ?? '#ffffff') });
+  }
+  let size = painted.size;
+  if (painted.cover) {
+    const natural = font.widthOfTextAtSize(text, size);
+    const maxWidth = Math.max(8, painted.cover.w);
+    if (natural > maxWidth * 1.35) size = Math.max(size * 0.4, (maxWidth / natural) * size);
+  }
+  page.pushOperators(pushGraphicsState(), setTextRenderingMode(TextRenderingMode.Fill));
+  try {
+    page.drawText(text, {
+      x: painted.x,
+      y: painted.y,
+      size,
+      font,
+      color: hexToRgb(painted.color),
+      ...(painted.rotation ? { rotate: degrees(painted.rotation) } : {}),
+    });
+  } finally {
+    page.pushOperators(setTextRenderingMode(TextRenderingMode.Fill), popGraphicsState());
   }
 }
 

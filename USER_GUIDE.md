@@ -38,7 +38,12 @@ Password-protected PDFs prompt for the password. Autosave, when enabled, is stor
 
 **Existing text:** choose **Edit text** (`E`) and click a line. The original font, size and colour
 are kept; the replacement is written into the page's content stream. Runs that cannot be mapped back
-to Unicode are reported in a toast instead of being silently corrupted.
+to Unicode are reported in a toast instead of being silently corrupted. This also works on scanned
+PDFs that carry an *invisible* OCR text layer (including files exported by PDFmaster's own OCR): the
+replacement covers the scanned word with a background-coloured box and is re-drawn as visible,
+selectable text, with the inherited invisible text-rendering state reset on export so it cannot be
+hidden. You can edit an already-edited line again — the newest replacement wins. The replacement
+font is matched from the original font's metadata on a best-effort basis (serif/sans, bold, italic).
 
 **New text:** choose **Add text** (`T`), click where you want it, and type. Esc commits. The toolbar
 carries font, size, bold/italic, alignment, colour and auto-wrap; the Properties panel lets you fine
@@ -107,6 +112,14 @@ appears in the overlay; each page reports its confidence in the OCR panel. The i
 is written on export, so the scan looks untouched but is searchable and copyable. Language data is
 cached after the first download, so repeat runs work offline.
 
+**Replacing recognised words:** in the *Recognise text* panel, for each recognised page type the
+word as it was recognised (case-insensitive) and its replacement, then add it. On export, every
+matching word is covered with a box sampled from the page background around the word, and the
+replacement is drawn on top as visible, searchable text. Replaced words are skipped in the invisible
+text layer, so copying selects the new text once. Note this is a **visual overlay**: the original
+scanned pixels remain in the file. To truly remove sensitive content from a scan, use **Redaction**
+(see Protecting a document) instead.
+
 ## 9. Exporting and printing
 
 **Export** (toolbar, `Ctrl+Shift+E`, or **File ▸ Export as…**) offers:
@@ -120,6 +133,13 @@ cached after the first download, so repeat runs work offline.
 
 Page ranges accept `1-3, 5, 8-10`. **Print** (`Ctrl+P`) flattens the document into a temporary PDF
 and hands it to the browser's print dialog.
+
+**File name and status:** the file name in the export dialog is editable — the file is saved under
+the name you give it. After exporting, a status banner summarises the result: how many text edits
+were applied and how many failed (with the per-page reason for each), redacted runs removed, and OCR
+words replaced. A clean export closes the dialog; if the save fails (the download was blocked or the
+save dialog was cancelled) or any edits could not be applied, the dialog stays open so you can see
+and fix the problem before exporting again.
 
 ## 10. Recovering your work
 
@@ -183,6 +203,8 @@ keeps working offline after the app files have been cached.
 | Symptom | Explanation |
 | --- | --- |
 | A text edit reports "could not be rewritten" | The run uses a font encoding that cannot be mapped back to Unicode; nothing was changed. |
+| An OCR replacement reports "matched no recognised word" | The word is spelled differently in the recognition result — check the word in the panel and try again. |
+| The replaced scan word is still in the raw file | OCR replacement is a visual overlay; the original pixels remain. Use Redaction to delete content for real. |
 | OCR is slow the first time | The language data (~10 MB per language) is being downloaded; later runs are local. |
 | A very large PDF opens slowly | Pages render lazily; only visible pages are rasterised. |
 | Exported file is larger than expected | Enable *Flatten* or use **Compress**; embedded DejaVu fonts also add ~400 KB. |

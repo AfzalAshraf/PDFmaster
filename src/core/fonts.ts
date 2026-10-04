@@ -43,6 +43,33 @@ export function familyIsSerif(fontFamily: string | undefined): boolean {
   return /times|serif|georgia|garamond/i.test(fontFamily ?? '');
 }
 
+export interface FontMeta {
+  serif: boolean;
+  bold: boolean;
+  italic: boolean;
+}
+
+const SERIF_HINTS = /times|tms|serif|georgia|garamond|palatino|bookman|bodoni|baskerville|song|simsun|ming|nsim|stsong|cambria|freeserif/i;
+const SANS_HINTS = /arial|helvetica|sans|verdana|tahoma|segoe|calibri|roboto|lato|open sans|freesans|carlito|caladea|pt sans/i;
+const BOLD_HINTS = /bold|black|heavy|semibold|demi|extrabold|ultrabold/i;
+const ITALIC_HINTS = /italic|oblique/i;
+
+/**
+ * Best-effort parse of font metadata out of a font name.
+ *
+ * Handles BaseFont names ("Times-Bold", "ArialMT"), subsetting prefixes
+ * ("ABCDEF+Arial-BoldMT") and pdf.js font names ("Helv", "F1" — the latter
+ * simply yields the neutral default). Nothing here is authoritative; it only
+ * steers the choice of replacement font when an edit is re-painted.
+ */
+export function parseFontMeta(name: string | undefined): FontMeta {
+  const clean = (name ?? '').replace(/^[A-Z]{6}\+/i, '').replace(/^\//, '');
+  const serif = SERIF_HINTS.test(clean) && !SANS_HINTS.test(clean);
+  const bold = BOLD_HINTS.test(clean) && !/light|thin|book\b/i.test(clean);
+  const italic = ITALIC_HINTS.test(clean);
+  return { serif, bold, italic };
+}
+
 export function fontKeyFor(serif: boolean, bold?: boolean, italic?: boolean): FontKey {
   const family = serif ? 'serif' : 'sans';
   if (bold && italic) return `${family}-bolditalic` as FontKey;

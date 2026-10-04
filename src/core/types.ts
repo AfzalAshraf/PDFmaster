@@ -483,11 +483,28 @@ export interface OcrWord {
   rect: Rect;
 }
 
+/**
+ * A replacement for recognised text on a scanned page. On export every
+ * matching word is covered with a background-coloured rectangle (sampled
+ * from the scan) and re-drawn as visible, searchable text.
+ */
+export interface OcrReplacement {
+  id: string;
+  /** Recognised word to replace (all occurrences on the page). */
+  original: string;
+  /** Visible replacement text. */
+  text: string;
+  /** Background colour sampled from around the word (hex). */
+  bg?: string;
+}
+
 export interface OcrPageResult {
   pageId: PageId;
   words: OcrWord[];
   text: string;
   confidence: number;
+  /** Word replacements drawn over the scan at export time. */
+  replacements?: OcrReplacement[];
 }
 
 export interface SearchMatch {

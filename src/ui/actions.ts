@@ -5,6 +5,7 @@
 import type { BuildInput } from '../core/engine';
 import { fileToSource, blankSource } from '../core/importers';
 import { exportDocument, exportSplit, type ExportOutput, type ExportRequest } from '../core/exporter';
+import { BuildError, type BuildStats } from '../core/engine';
 import { recognizePage } from '../core/ocr';
 import { getPageTextData } from '../core/registry';
 import { loadSession, saveSession, type SavedSession } from '../core/storage';
@@ -183,8 +184,21 @@ export function currentExportRequest(options: ExportOptions): ExportRequest {
   };
 }
 
-export async function runExport(options: ExportOptions, output?: Partial<ExportOutput>): Promise<void> {
+/** Result of an export attempt, surfaced verbatim in the Export dialog. */
+export interface ExportOutcome {
+  ok: boolean;
+  filename?: string;
+  stats?: BuildStats;
+  warnings: string[];
+  errors: string[];
+}
+
+export async function runExport(
+  options: ExportOptions,
+  output?: Partial<ExportOutput> & { toast?: boolean },
+): Promise<ExportOutcome> {
   const ui = useUI.getState();
+  const announce = output?.toast !== false;
   ui.setBusy({ active: true, label: 'Preparing export', progress: 2 });
   try {
     const request = { ...currentExportRequest(options), ...output };
@@ -193,19 +207,39 @@ export async function runExport(options: ExportOptions, output?: Partial<ExportO
       (progress, label) => useUI.getState().setBusy({ active: true, label, progress }),
     );
     const saved = await downloadBlobObject(result.blob, result.filename);
-    if (!saved) return;
-    const warnings = [...result.warnings];
-    if (warnings.length) ui.toast('warning', warnings[0]);
-    else ui.toast('success', `Exported ${result.filename}`);
-    if (result.stats && (result.stats.editsFailed > 0 || result.stats.redactions > 0)) {
-      ui.toast(
-        'info',
-        `${result.stats.editsApplied} text edit(s) applied, ${result.stats.redactions} redacted run(s) removed.`,
-      );
+    if (!saved) {
+      const error = 'The file could not be saved — the download was blocked or the save dialog was cancelled.';
+      if (announce) ui.toast('error', error);
+      return { ok: false, warnings: result.warnings, errors: [error] };
+    }
+    const outcome: ExportOutcome = {
+      ok: true,
+      filename: result.filename,
+      stats: result.stats,
+      warnings: result.warnings,
+      errors: result.stats?.editErrors ?? [],
+    };
+    if (announce) {
+      if (outcome.errors.length) ui.toast('error', outcome.errors[0]);
+      else if (outcome.warnings.length) ui.toast('warning', outcome.warnings[0]);
+      else ui.toast('success', `Exported ${result.filename}`);
+      if (result.stats && (result.stats.editsFailed > 0 || result.stats.redactions > 0 || result.stats.ocrReplaced > 0)) {
+        const parts = [`${result.stats.editsApplied} text edit(s) applied`];
+        if (result.stats.redactions > 0) parts.push(`${result.stats.redactions} redacted run(s) removed`);
+        if (result.stats.ocrReplaced > 0) parts.push(`${result.stats.ocrReplaced} OCR word(s) replaced`);
+        if (result.stats.editsFailed > 0) parts.push(`${result.stats.editsFailed} failed`);
+        ui.toast('info', `${parts.join(', ')}.`);
+      }
     }
     useDoc.getState().markSaved();
+    return outcome;
   } catch (err) {
-    ui.toast('error', err instanceof Error ? err.message : 'Export failed.');
+    const errors =
+      err instanceof BuildError
+        ? [err.message, ...err.details]
+        : [err instanceof Error ? err.message : 'Export failed.'];
+    if (announce) ui.toast('error', errors[0]);
+    return { ok: false, warnings: [], errors };
   } finally {
     ui.setBusy({ active: false, label: '', progress: 0 });
   }

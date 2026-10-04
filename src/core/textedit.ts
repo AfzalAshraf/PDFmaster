@@ -10,6 +10,7 @@
  *    redaction area — the characters are removed from the file, not just hidden.
  */
 import { PDFDocument, PDFPage, pdfLib } from './pdflib';
+import { parseFontMeta, type FontMeta } from './fonts';
 import type { Rect, TextEditOp } from './types';
 import { normalizeText } from './utils';
 
@@ -29,11 +30,23 @@ export interface PaintedText {
   color: string;
   bold: boolean;
   italic: boolean;
+  /** Best-effort family of the original font (from its metadata). */
+  serif?: boolean;
+  /**
+   * Set when the original run was invisible (an OCR text layer, rendering
+   * mode 3): the raster word underneath is covered with a background box
+   * before the visible replacement is drawn.
+   */
+  cover?: Rect;
+  /** Background colour for {@link cover} (hex). Defaults to white. */
+  coverColor?: string;
 }
 
 export interface EditResult {
   applied: number;
   failed: number;
+  /** Originals of the edits that could not be located in the content stream. */
+  failedEdits: { original: string }[];
 }
 
 export interface RedactResult {
@@ -257,7 +270,7 @@ export function applyPageEdits(
   redactions: Rect[],
 ): { edit: EditResult; redact: RedactResult; paint: PaintedText[] } {
   const out = {
-    edit: { applied: 0, failed: 0 },
+    edit: { applied: 0, failed: 0, failedEdits: [] as { original: string }[] },
     redact: { removedTextRuns: 0, removedXObjects: 0 },
   };
   const painted: PaintedText[] = [];
@@ -267,29 +280,47 @@ export function applyPageEdits(
   try {
     ops = readPageContentOps(doc, page);
   } catch {
-    return { edit: { applied: 0, failed: edits.length }, redact: out.redact, paint: [] };
+    return { edit: { applied: 0, failed: edits.length, failedEdits: edits.map((e) => ({ original: e.original })) }, redact: out.redact, paint: [] };
   }
-  if (!ops.length) return { edit: { applied: 0, failed: edits.length }, redact: out.redact, paint: [] };
+  if (!ops.length) return { edit: { applied: 0, failed: edits.length, failedEdits: edits.map((e) => ({ original: e.original })) }, redact: out.redact, paint: [] };
 
   const fill: [number, number, number] = [0, 0, 0];
   const textMatrix = { m: [...IDENTITY6], line: [...IDENTITY6] };
   let leading = 0;
   let fontSize = 12;
   let ctm: number[] = [...IDENTITY6];
-  const stack: number[][] = [];
+  // Text rendering mode (the `Tr` operator). 3 = invisible — the state that
+  // OCR text layers leave behind and that must not leak into replacements.
+  let renderMode = 0;
+  let currentFont = '';
+  const stack: Array<{ ctm: number[]; renderMode: number }> = [];
 
   const pending = new Map(edits.map((e) => [e.id, e]));
   const normEdits = edits.map((e) => ({ edit: e, norm: normalizeText(e.original) }));
+  const baseFonts = pageBaseFonts(page);
+  const metaCache = new Map<string, FontMeta>();
+  const metaForFont = (resource: string, fallbackName: string | undefined): FontMeta => {
+    const name = baseFonts.get(resource) ?? (resource || fallbackName);
+    if (!name) return { serif: false, bold: false, italic: false };
+    const cached = metaCache.get(name);
+    if (cached) return cached;
+    const meta = parseFontMeta(name);
+    metaCache.set(name, meta);
+    return meta;
+  };
 
   for (const op of ops) {
     const name = op.name;
     switch (name) {
       case 'q':
-        stack.push([...ctm]);
+        stack.push({ ctm: [...ctm], renderMode });
         break;
-      case 'Q':
-        ctm = stack.pop() ?? [...IDENTITY6];
+      case 'Q': {
+        const snap = stack.pop() ?? { ctm: [...IDENTITY6], renderMode: 0 };
+        ctm = snap.ctm;
+        renderMode = snap.renderMode;
         break;
+      }
       case 'cm': {
         const n = nums(op, 6);
         if (n) ctm = mul6(ctm, n);
@@ -301,6 +332,10 @@ export function applyPageEdits(
         break;
       case 'Tf':
         if (typeof op.args[1] === 'number') fontSize = op.args[1];
+        if (isName(op.args[0])) currentFont = op.args[0].value ?? '';
+        break;
+      case 'Tr':
+        if (typeof op.args[0] === 'number') renderMode = op.args[0];
         break;
       case 'TL':
         if (typeof op.args[0] === 'number') leading = op.args[0];
@@ -369,7 +404,7 @@ export function applyPageEdits(
     /* --------------------------- text edits ---------------------------- */
     if (normEdits.length) {
       const norm = normalizeText(text);
-      const hit = normEdits.find(({ edit, norm: target2 }) => {
+      const hits = normEdits.filter(({ edit, norm: target2 }) => {
         if (!pending.has(edit.id)) return false;
         const textMatches = norm === target2 || norm.includes(target2) || target2.includes(norm);
         // Primary match: baseline origin (encoding independent). Fall back to
@@ -382,11 +417,21 @@ export function applyPageEdits(
         }
         return textMatches;
       });
-      if (hit) {
-        pending.delete(hit.edit.id);
+      if (hits.length) {
+        // Repeated edits of the same run (same origin) stay active: the
+        // newest replacement wins and all of them are consumed, so the user
+        // never sees phantom "failed edit" reports for lines they re-edited.
+        const sameRun = hits.length > 1 && hits.every(({ edit }) => edit.origin);
+        const hit = sameRun ? hits[hits.length - 1] : hits[0];
+        for (const h of sameRun ? hits : [hit]) pending.delete(h.edit.id);
         const replacement = hit.edit.text;
+        const meta = metaForFont(currentFont, hit.edit.fontName);
+        // An invisible (rendering mode 3) run cannot be rewritten in place —
+        // the replacement would inherit the invisible state — so it is always
+        // blanked and re-painted visibly over the raster word.
+        const invisible = renderMode === 3;
         const asciiSafe =
-          isString(target) && /^[\x20-\x7e]*$/.test(text) && /^[\x20-\x7e]*$/.test(replacement);
+          isString(target) && /^[\x20-\x7e]*$/.test(text) && /^[\x20-\x7e]*$/.test(replacement) && !invisible;
         if (asciiSafe) {
           setShowText(op, replacement);
         } else {
@@ -398,8 +443,10 @@ export function applyPageEdits(
             size: Math.max(4, renderSize),
             rotation: (Math.atan2(matrix[1], matrix[0]) * 180) / Math.PI,
             color: rgbToHex(fill),
-            bold: /bold|black|heavy|semibold/i.test(hit.edit.fontName ?? ''),
-            italic: /italic|oblique/i.test(hit.edit.fontName ?? ''),
+            bold: meta.bold,
+            italic: meta.italic,
+            serif: meta.serif,
+            cover: invisible ? rect : undefined,
           });
         }
         out.edit.applied += 1;
@@ -447,7 +494,8 @@ export function applyPageEdits(
       painted.length = 0;
     }
   }
-  out.edit.failed = pending.size;
+  out.edit.failedEdits = [...pending.values()].map((edit) => ({ original: edit.original }));
+  out.edit.failed = out.edit.failedEdits.length;
   return { edit: out.edit, redact: out.redact, paint: painted };
 }
 
@@ -531,4 +579,28 @@ export function removePageAnnotations(doc: PDFDocument, page: PDFPage): number {
   const count = annots instanceof pdfLib.PDFArray ? annots.size() : 0;
   page.node.delete(pdfLib.PDFName.of('Annots'));
   return count;
+}
+
+/**
+ * Best-effort mapping of a page's font resource names (e.g. /F1) to their
+ * BaseFont names so replacements can be matched to the original font's
+ * metadata (serif / bold / italic).
+ */
+export function pageBaseFonts(page: PDFPage): Map<string, string> {
+  const out = new Map<string, string>();
+  try {
+    const resources = page.node.Resources();
+    const fonts = resources?.lookup(pdfLib.PDFName.of('Font'), pdfLib.PDFDict);
+    if (!fonts) return out;
+    for (const keyName of fonts.keys()) {
+      const key = keyName.toString().replace(/^\//, '');
+      const entry = fonts.lookup(keyName);
+      if (!(entry instanceof pdfLib.PDFDict)) continue;
+      const base = entry.lookup(pdfLib.PDFName.of('BaseFont'));
+      if (base instanceof pdfLib.PDFName) out.set(key, base.toString().replace(/^\//, ''));
+    }
+  } catch {
+    /* no font resources — the caller falls back to the edit's font name */
+  }
+  return out;
 }

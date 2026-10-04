@@ -60,6 +60,7 @@ export async function exportDocument(req: ExportRequest, onProgress?: ProgressFn
       pdfA: options.format === 'pdf-a' || options.pdfA,
       flattenForms: options.format === 'pdf-flat' ? true : (options.flatten ?? req.input.options?.flattenForms),
       keepComments: options.format === 'pdf-flat' ? false : true,
+      ocr: options.ocr !== false,
     },
   };
   const request: ExportRequest = { ...req, input: base };
