@@ -15,6 +15,7 @@ import type {
   HeaderFooterSettings,
   ObjectId,
   OcrPageResult,
+  OcrReplacement,
   PageEntry,
   PageId,
   PageNumberSettings,
@@ -203,6 +204,8 @@ export interface DocState {
   removeAttachment: (id: string) => void;
   setOcr: (pageId: PageId, result: OcrPageResult) => void;
   clearOcr: () => void;
+  addOcrReplacement: (pageId: PageId, replacement: OcrReplacement) => void;
+  removeOcrReplacement: (pageId: PageId, id: string) => void;
 
   /* history & persistence */
   pushHistory: (label: string) => void;
@@ -581,6 +584,18 @@ export const useDoc = create<DocState>((set, get) => {
     removeAttachment: (id) => mutate('Remove attachment', (state) => ({ attachments: state.attachments.filter((a) => a.id !== id) })),
     setOcr: (pageId, result) => mutate('Add OCR text layer', (state) => ({ ocr: { ...state.ocr, [pageId]: { ...result, pageId } } })),
     clearOcr: () => mutate('Remove OCR layer', () => ({ ocr: {} })),
+    addOcrReplacement: (pageId, replacement) =>
+      mutate('Replace OCR text', (state) => {
+        const current = state.ocr[pageId];
+        if (!current) return {};
+        return { ocr: { ...state.ocr, [pageId]: { ...current, replacements: [...(current.replacements ?? []), replacement] } } };
+      }),
+    removeOcrReplacement: (pageId, id) =>
+      mutate('Remove OCR replacement', (state) => {
+        const current = state.ocr[pageId];
+        if (!current?.replacements?.length) return {};
+        return { ocr: { ...state.ocr, [pageId]: { ...current, replacements: current.replacements.filter((r) => r.id !== id) } } };
+      }),
 
     /* ------------------------- history & persistence ---------------------- */
     pushHistory: (label) => {

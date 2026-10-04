@@ -1,11 +1,11 @@
-import React, { useMemo, useState } from 'react';
-import { FileArchive, FileDown, FileImage, FileText, FileType2, Info } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, CheckCircle2, FileArchive, FileDown, FileImage, FileText, FileType2, Info } from 'lucide-react';
 import { EXPORT_FORMATS } from '../core/exporter';
 import type { ExportFormat, ExportOptions } from '../core/types';
 import { useDoc } from '../state/store';
 import { useUI } from '../state/ui';
 import { Button, Field, Input, Modal, Select, Slider, Toggle } from './primitives';
-import { defaultExportOptions, runExport, saveSplit } from './actions';
+import { defaultExportOptions, runExport, saveSplit, type ExportOutcome } from './actions';
 import { formatBytes, parsePageRange } from '../core/utils';
 
 const GROUP_ICONS: Record<string, React.ComponentType<{ size?: number; strokeWidth?: number }>> = {
@@ -26,6 +26,17 @@ export const ExportDialog: React.FC<{ open: boolean; onClose: () => void }> = ({
   const [options, setOptions] = useState<ExportOptions>(() => ({ ...defaultExportOptions(), format: 'pdf' }));
   const [busy, setBusy] = useState(false);
   const [splitCount, setSplitCount] = useState(2);
+  const [fileName, setFileName] = useState(docName);
+  const [outcome, setOutcome] = useState<ExportOutcome | null>(null);
+
+  // Reset the (editable) file name and any previous result each time the
+  // dialog opens, so a stale "export failed" banner is never shown.
+  useEffect(() => {
+    if (open) {
+      setFileName(docName);
+      setOutcome(null);
+    }
+  }, [open, docName]);
 
   const patch = (next: Partial<ExportOptions>) => setOptions((prev) => ({ ...prev, ...next }));
 
@@ -44,12 +55,13 @@ export const ExportDialog: React.FC<{ open: boolean; onClose: () => void }> = ({
 
   const exportNow = async () => {
     setBusy(true);
-    try {
-      await runExport(options);
-      onClose();
-    } finally {
-      setBusy(false);
-    }
+    setOutcome(null);
+    const result = await runExport(options, { filename: fileName.trim() || docName, toast: false });
+    setOutcome(result);
+    setBusy(false);
+    // Close on a clean export; keep the dialog open when the save failed or
+    // some edits could not be applied, so the user sees what went wrong.
+    if (result.ok && (result.stats?.editsFailed ?? 0) === 0) onClose();
   };
 
   return (
@@ -75,6 +87,7 @@ export const ExportDialog: React.FC<{ open: boolean; onClose: () => void }> = ({
         </div>
       }
     >
+      {outcome ? <ExportStatus outcome={outcome} /> : null}
       <div className="grid grid-cols-[1fr_240px] gap-4">
         <div className="space-y-4">
           {Object.entries(groups).map(([group, formats]) => {
@@ -107,8 +120,8 @@ export const ExportDialog: React.FC<{ open: boolean; onClose: () => void }> = ({
         </div>
 
         <div className="space-y-3 border-l border-ink-700 pl-4">
-          <Field label="File name">
-            <Input value={docName} readOnly className="h-7" />
+          <Field label="File name" hint="Editable — the download is saved under this name">
+            <Input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder={docName || 'document'} className="h-7" />
           </Field>
           <Field label="Pages">
             <Select
@@ -230,3 +243,60 @@ export const ExportDialog: React.FC<{ open: boolean; onClose: () => void }> = ({
 function objectCountLabel(count: number): string {
   return `${count} edit${count === 1 ? '' : 's'}`;
 }
+
+/**
+ * Post-export status: a clean export closes the dialog, but a failed save or
+ * failed edits keeps it open and shows exactly what went wrong, including the
+ * per-page reasons for each edit that could not be applied.
+ */
+const ExportStatus: React.FC<{ outcome: ExportOutcome }> = ({ outcome }) => {
+  const stats = outcome.stats;
+  const parts: string[] = [];
+  if (stats) {
+    if (stats.editsApplied > 0) parts.push(`${stats.editsApplied} text edit${stats.editsApplied === 1 ? '' : 's'} applied`);
+    if (stats.redactions > 0) parts.push(`${stats.redactions} redacted run${stats.redactions === 1 ? '' : 's'} removed`);
+    if (stats.ocrReplaced > 0) parts.push(`${stats.ocrReplaced} OCR word${stats.ocrReplaced === 1 ? '' : 's'} replaced`);
+    if (stats.editsFailed > 0) parts.push(`${stats.editsFailed} text edit${stats.editsFailed === 1 ? '' : 's'} failed`);
+  }
+  const details = [...outcome.errors, ...(stats?.editErrors ?? []).filter((e) => !outcome.errors.includes(e))].slice(0, 4);
+  if (!outcome.ok) {
+    return (
+      <div className="mb-3 rounded-md border border-red-500/40 bg-red-500/10 p-2.5">
+        <p className="flex items-center gap-1.5 text-2xs font-semibold text-red-300">
+          <AlertTriangle size={13} strokeWidth={1.75} /> Export failed — the file was not saved.
+        </p>
+        {details.length ? (
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-2xs text-red-200/90">
+            {details.map((error, i) => (
+              <li key={i}>{error}</li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="mt-1 text-2xs text-red-200/70">Fix the problem and export again, or close this dialog.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mb-3 rounded-md border border-ink-600 bg-ink-800/50 p-2.5">
+      <p className="flex items-center gap-1.5 text-2xs font-semibold text-emerald-300">
+        <CheckCircle2 size={13} strokeWidth={1.75} /> Exported {outcome.filename}
+        {parts.length ? <span className="font-normal text-ink-300">— {parts.join(', ')}</span> : null}
+      </p>
+      {details.length ? (
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-2xs text-amber-200/90">
+          {details.map((error, i) => (
+            <li key={i}>{error}</li>
+          ))}
+        </ul>
+      ) : null}
+      {outcome.warnings.length ? (
+        <p className="mt-1 text-2xs text-ink-400">{outcome.warnings[0]}</p>
+      ) : null}
+      {stats && stats.editsFailed > 0 ? (
+        <p className="mt-1 text-2xs text-amber-300/80">
+          The failed edits were left as they were in the document; fix them and export again.
+        </p>
+      ) : null}
+    </div>
+  );
+};

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlignCenter,
   AlignHorizontalSpaceAround,
@@ -45,6 +45,7 @@ import {
 } from './primitives';
 import { BODY_FONT_SIZES, COLOR_PALETTE, HIGHLIGHT_COLORS, STAMPS, TEXT_FONTS } from '../core/constants';
 import type { AnyObject, FormFieldObject, PageId } from '../core/types';
+import { planOcrReplacements, sampleWordBackground } from '../core/ocr';
 import { sanitizeFilename, uid } from '../core/utils';
 import { defaultExportOptions, runExport, saveSplit } from './actions';
 import { assetFromFile } from '../core/assets';
@@ -993,7 +994,7 @@ const ExportPanel: React.FC = () => {
   const toast = useUI((s) => s.toast);
   const docName = useDoc((s) => s.docName);
 
-  const presets: { label: string; hint: string; run: () => Promise<void> }[] = [
+  const presets: { label: string; hint: string; run: () => Promise<unknown> }[] = [
     {
       label: 'Smallest file size',
       hint: 'PDF, flattened, 150 dpi images',
@@ -1169,6 +1170,52 @@ const OcrPanel: React.FC = () => {
   const openDialog = useUI((s) => s.openDialog);
   const ocr = useDoc((s) => s.ocr);
   const pages = useDoc((s) => s.pages).filter((p) => !p.deleted);
+  const sources = useDoc((s) => s.sources);
+  const addOcrReplacement = useDoc((s) => s.addOcrReplacement);
+  const removeOcrReplacement = useDoc((s) => s.removeOcrReplacement);
+  const toast = useUI((s) => s.toast);
+  const [finds, setFinds] = useState<Record<string, string>>({});
+  const [replaces, setReplaces] = useState<Record<string, string>>({});
+  const [busyPage, setBusyPage] = useState<string | null>(null);
+
+  const addReplacement = async (page: (typeof pages)[number]) => {
+    const result = ocr[page.id];
+    const find = (finds[page.id] ?? '').trim();
+    const replace = (replaces[page.id] ?? '').trim();
+    if (!result) return;
+    if (!find) {
+      toast('warning', 'Type the recognised word to replace first.');
+      return;
+    }
+    if (!replace) {
+      toast('warning', 'Type the replacement text (leave blank to just hide the word).');
+      return;
+    }
+    const source = sources[page.sourceId];
+    setBusyPage(page.id);
+    try {
+      // Validate against the recognised words before persisting anything.
+      const preview = planOcrReplacements(result.words, [{ id: 'preview', original: find, text: replace }]);
+      if (preview.unmatched.length) {
+        toast('warning', `"${find}" was not recognised on page ${page.index + 1}.`);
+        return;
+      }
+      // Sample the background around the first matched word so the covering
+      // box blends into the scan. Best effort — falls back to white.
+      let bg: string | undefined;
+      if (source) {
+        const first = result.words[[...preview.replace.keys()][0]];
+        if (first) bg = await sampleWordBackground(source, page.sourceIndex, first.rect);
+      }
+      addOcrReplacement(page.id, { id: uid('ocr-rep'), original: find, text: replace, bg });
+      setFinds((prev) => ({ ...prev, [page.id]: '' }));
+      setReplaces((prev) => ({ ...prev, [page.id]: '' }));
+      toast('success', `“${find}” will be replaced on export (page ${page.index + 1}).`);
+    } finally {
+      setBusyPage(null);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Button variant="primary" full icon={ScanText} onClick={() => openDialog('ocr')}>
@@ -1177,21 +1224,68 @@ const OcrPanel: React.FC = () => {
       <div className="space-y-1">
         {pages.slice(0, 40).map((page) => {
           const result = ocr[page.id];
-          return (
-            <div key={page.id} className="flex items-center justify-between rounded border border-ink-700 bg-ink-800/50 px-2 py-1 text-2xs">
-              <span className="text-ink-300">Page {page.index + 1}</span>
-              {result ? (
-                <Badge tone="success">{Math.round(result.confidence)}% · {result.words.length} words</Badge>
-              ) : (
+          if (!result) {
+            return (
+              <div key={page.id} className="flex items-center justify-between rounded border border-ink-700 bg-ink-800/50 px-2 py-1 text-2xs">
+                <span className="text-ink-300">Page {page.index + 1}</span>
                 <span className="text-ink-500">not recognised</span>
-              )}
+              </div>
+            );
+          }
+          const replacements = result.replacements ?? [];
+          return (
+            <div key={page.id} className="space-y-1.5 rounded border border-ink-700 bg-ink-800/50 p-2">
+              <div className="flex items-center justify-between text-2xs">
+                <span className="text-ink-300">Page {page.index + 1}</span>
+                <Badge tone="success">
+                  {Math.round(result.confidence)}% · {result.words.length} words
+                </Badge>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={finds[page.id] ?? ''}
+                  placeholder="Word in scan"
+                  onChange={(e) => setFinds((prev) => ({ ...prev, [page.id]: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && void addReplacement(page)}
+                  className="h-7 flex-1 text-2xs"
+                />
+                <Input
+                  value={replaces[page.id] ?? ''}
+                  placeholder="Replace with"
+                  onChange={(e) => setReplaces((prev) => ({ ...prev, [page.id]: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && void addReplacement(page)}
+                  className="h-7 flex-1 text-2xs"
+                />
+                <IconButton
+                  icon={Plus}
+                  label={`Add replacement on page ${page.index + 1}`}
+                  disabled={busyPage === page.id}
+                  onClick={() => void addReplacement(page)}
+                />
+              </div>
+              {replacements.length ? (
+                <ul className="space-y-1">
+                  {replacements.map((r) => (
+                    <li key={r.id} className="flex items-center justify-between gap-2 text-2xs">
+                      <span className="flex min-w-0 items-center gap-1 text-ink-300">
+                        <span className="truncate">{r.original}</span>
+                        <CornerDownRight size={10} className="shrink-0 text-ink-500" />
+                        <span className="truncate text-ink-100">{r.text || '(hidden)'}</span>
+                      </span>
+                      <IconButton icon={X} label="Remove replacement" size="sm" onClick={() => removeOcrReplacement(page.id, r.id)} />
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           );
         })}
       </div>
       <p className="text-2xs leading-4 text-ink-500">
-        The recognition runs in a web worker. The invisible text layer is added to the exported PDF, making the scan
-        searchable.
+        Recognition runs in a web worker; the invisible text layer is added on export so the scan is searchable. You
+        can also replace recognised words: on export the scanned word is covered with a box sampled from the
+        surrounding background and re-drawn as visible, searchable text. This is a visual overlay — the original
+        pixels remain in the file, so it is not secure redaction.
       </p>
     </div>
   );

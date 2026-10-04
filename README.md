@@ -56,6 +56,12 @@ builds the web assets and launches the desktop shell.
 ### Edit
 - **Edit existing text** in place: click a line of text, type the replacement. The original font,
   size, colour and position are preserved because the run is rewritten inside the content stream.
+  Editing also works on PDFs that already carry an *invisible* OCR text layer (scans, including files
+  exported by PDFmaster's own OCR): the replacement covers the scanned word with a background box and
+  re-draws it as visible, searchable text, and the export resets any inherited invisible
+  text-rendering state so the replacement cannot be hidden. Re-editing a line repeatedly stays
+  active (the newest replacement wins), and the replacement font is matched from the original
+  font's metadata on a best-effort basis.
 - **Add text boxes** with the standard-14 fonts or DejaVu (auto-embedded for non-Latin text),
   bold/italic/alignment/auto-wrap controls, and inline editing directly on the page.
 - **Images**: insert, replace, move, resize, rotate; WebP/GIF/SVG/BMP are re-encoded automatically.
@@ -98,6 +104,10 @@ builds the web assets and launches the desktop shell.
 - The recognised words are converted to PDF space and written as an **invisible text layer** on
   export, so the page looks identical but becomes searchable and copyable. Language data is cached
   by the service worker for offline reuse.
+- **Replace recognised words** directly from the OCR panel: on export each matching word is covered
+  with a box sampled from the surrounding background and re-drawn as visible, searchable text (the
+  replaced word is skipped in the invisible layer). This is a *visual overlay* — the original image
+  pixels remain in the file, so it is not secure redaction; use the redaction tool to delete content.
 
 ### Convert & export
 - PDF, PDF/A-2b (metadata + embedded fonts), flattened PDF.
@@ -106,6 +116,9 @@ builds the web assets and launches the desktop shell.
 - Word (.docx), PowerPoint (.pptx) and Excel (.xlsx) — written as minimal OOXML through JSZip, so
   there is no heavyweight Office dependency in the bundle.
 - Split exports (multi-file ZIP) and print via a temporary PDF fed to the browser's print dialog.
+- The export dialog's **file name is editable**, and after exporting a status banner reports applied
+  vs failed text edits (with per-page reasons), redacted runs and replaced OCR words. A failed save
+  (blocked download / cancelled save dialog) keeps the dialog open with the error.
 
 ### Platform
 - Installable PWA for the browser plus a Windows x64 desktop installer and portable `.exe` built
@@ -130,9 +143,11 @@ src/
     draw.ts        every annotation/image/shape is painted here into a pdf-lib page
     engine.ts      buildPdf(): pages + edits + overlays + forms + security -> PDF bytes
     annotations.ts real /Annots dictionaries, document JavaScript, signature fields
-    textedit.ts    content-stream parsing for text replacement and redaction
+    textedit.ts    content-stream parsing: text replacement (incl. invisible OCR
+                   text layers + repeated edits) and redaction
     fonts.ts       lazy DejaVu loading/embedding for Unicode and PDF/A output
-    ocr.ts         tesseract.js worker + word rectangles in PDF space
+    ocr.ts         tesseract.js worker, word rectangles in PDF space, word
+                   replacement + background sampling
     signing.ts     PKCS#12 inspection and PAdES signing
     exporter.ts    every export format (raster, text, OOXML, JSON, split ZIP)
     importers.ts   any file -> PDF source (Office/text/HTML/images/PDF)
