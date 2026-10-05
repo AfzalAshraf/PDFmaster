@@ -31,7 +31,7 @@ import {
   Type,
 } from 'lucide-react';
 import { useUI } from '../state/ui';
-import { useDoc } from '../state/store';
+import { storeIndexFromVisual, useDoc } from '../state/store';
 import type { ToolId } from '../core/constants';
 import { BODY_FONT_SIZES, COLOR_PALETTE, HIGHLIGHT_COLORS, STAMPS, TEXT_FONTS } from '../core/constants';
 import { ColorSwatch, IconButton, Menu, MenuItem, MenuSeparator, Select, Slider, Toggle } from './primitives';
@@ -282,7 +282,11 @@ export const Toolbar: React.FC = () => {
           disabled={!page}
           onClick={() => page && useDoc.getState().rotatePages([page.id], 90)}
         />
-        <IconButton icon={Plus} label="Insert blank page" onClick={() => useDoc.getState().addBlankPage(undefined, currentPage + 1)} />
+        <IconButton
+          icon={Plus}
+          label="Insert blank page"
+          onClick={() => useDoc.getState().addBlankPage(undefined, storeIndexFromVisual(useDoc.getState().pages, currentPage + 1))}
+        />
         <IconButton
           icon={Trash2}
           label="Delete current page"
@@ -291,7 +295,7 @@ export const Toolbar: React.FC = () => {
         />
         <IconButton icon={ImagePlus} label="Insert image" disabled={!page} onClick={() => page && void addImageToPage(page.id)} />
         <IconButton icon={Layers} label="Organise pages" active={rightPanel === 'organize'} onClick={() => setRightPanel('organize')} />
-        <IconButton icon={Crop} label="Crop page" onClick={() => openDialog('compress')} />
+        <IconButton icon={Crop} label="Crop page" onClick={() => setTool('crop')} />
         <IconButton icon={ScanText} label="OCR this document" onClick={() => openDialog('ocr')} />
         <IconButton icon={Lock} label="Password & permissions" onClick={() => openDialog('security')} />
       </div>

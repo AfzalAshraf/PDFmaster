@@ -11,6 +11,7 @@ import {
   degrees,
   fontForStyle,
   hexToRgb,
+  pdfLib,
   sanitizeForStandardFont,
   wrapText,
 } from './pdflib';
@@ -32,7 +33,7 @@ import type {
   WhiteoutObject,
 } from './types';
 import { dataUrlToUint8 } from './utils';
-import { simplifyStroke } from './geometry';
+import { boundsOfObject, simplifyStroke } from './geometry';
 
 export interface DrawContext {
   doc: PDFDocument;
@@ -42,27 +43,49 @@ export interface DrawContext {
   keepComments: boolean;
   /** Force embedded TrueType fonts (required for PDF/A output). */
   embedFonts?: boolean;
-  registerLink?: (rect: { x: number; y: number; w: number; h: number }, url: string) => void;
+  registerLink?: (rect: { x: number; y: number; w: number; h: number }, link: LinkObject) => void;
   registerNote?: (note: NoteObject) => void;
   registerMarkup?: (obj: HighlightObject) => void;
   registerWidget?: (field: FormFieldObject) => void;
 }
 
-function localPoint(obj: { x: number; y: number; w: number; h: number; rotation: number }, nx: number, ny: number) {
-  // normalized local (0..1, y down) -> PDF space, honouring the object rotation
-  const px = obj.x + nx * obj.w;
-  const py = obj.y + obj.h - ny * obj.h;
-  if (!obj.rotation) return { x: px, y: py };
-  const rad = (obj.rotation * Math.PI) / 180;
-  const cx = obj.x + obj.w / 2;
-  const cy = obj.y + obj.h / 2;
-  const dx = px - cx;
-  const dy = py - cy;
-  return {
-    x: cx + dx * Math.cos(rad) - dy * Math.sin(rad),
-    y: cy + dx * Math.sin(rad) + dy * Math.cos(rad),
-  };
+/**
+ * Normalized local point -> PDF user space.
+ * Local coordinates are y-up inside the unrotated box (0 = bottom, 1 = top),
+ * matching the on-screen SVG which flips them for CSS. Object rotation is
+ * applied by the caller via the page CTM, not here — doing both flips ink
+ * vertically and rotates lines twice.
+ */
+export function localPdfPoint(
+  obj: { x: number; y: number; w: number; h: number },
+  nx: number,
+  ny: number,
+): { x: number; y: number } {
+  return { x: obj.x + nx * obj.w, y: obj.y + ny * obj.h };
 }
+
+const localPoint = localPdfPoint;
+
+/** Rotation of `deg` degrees CCW about (cx, cy), as a PDF cm matrix. */
+function rotationAbout(deg: number, cx: number, cy: number): [number, number, number, number, number, number] {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [cos, sin, -sin, cos, cx - cos * cx + sin * cy, cy - sin * cx - cos * cy];
+}
+
+const CONTENT_ROTATED = new Set<AnyObject['kind']>([
+  'textbox',
+  'shape',
+  'ink',
+  'stamp',
+  'signature',
+  'image',
+  'redact',
+  'whiteout',
+  'measure',
+  'note',
+]);
 
 const HEX_BLACK = '#000000';
 
@@ -535,7 +558,8 @@ function drawMeasure(ctx: DrawContext, obj: MeasureObject) {
 }
 
 function drawLink(ctx: DrawContext, obj: LinkObject) {
-  if (obj.hint) {
+  const rect = obj.rotation ? boundsOfObject(obj) : { x: obj.x, y: obj.y, w: obj.w, h: obj.h };
+  if (obj.hint || obj.linkType === 'page') {
     ctx.page.drawRectangle({
       x: obj.x,
       y: obj.y,
@@ -543,11 +567,11 @@ function drawLink(ctx: DrawContext, obj: LinkObject) {
       height: obj.h,
       borderColor: hexToRgb('#2f89ff'),
       borderWidth: 0.75,
-      borderOpacity: 0.6,
+      borderOpacity: 0.45,
       opacity: 0,
     });
   }
-  ctx.registerLink?.({ x: obj.x, y: obj.y, w: obj.w, h: obj.h }, obj.url);
+  ctx.registerLink?.(rect, obj);
 }
 
 /* ------------------------------------------------------------------ */
@@ -555,6 +579,22 @@ function drawLink(ctx: DrawContext, obj: LinkObject) {
 /* ------------------------------------------------------------------ */
 
 export async function drawObject(ctx: DrawContext, obj: AnyObject): Promise<void> {
+  const rotate = Boolean(obj.rotation) && CONTENT_ROTATED.has(obj.kind);
+  if (rotate) {
+    const [a, b, c, d, e, f] = rotationAbout(obj.rotation, obj.x + obj.w / 2, obj.y + obj.h / 2);
+    ctx.page.pushOperators(
+      pdfLib.pushGraphicsState(),
+      pdfLib.concatTransformationMatrix(a, b, c, d, e, f),
+    );
+  }
+  try {
+    await drawObjectUnrotated(ctx, obj);
+  } finally {
+    if (rotate) ctx.page.pushOperators(pdfLib.popGraphicsState());
+  }
+}
+
+async function drawObjectUnrotated(ctx: DrawContext, obj: AnyObject): Promise<void> {
   switch (obj.kind) {
     case 'highlight':
     case 'underline':

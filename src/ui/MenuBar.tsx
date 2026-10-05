@@ -44,7 +44,7 @@ import {
   Unlock,
   WandSparkles,
 } from 'lucide-react';
-import { useDoc } from '../state/store';
+import { storeIndexFromVisual, useDoc } from '../state/store';
 import { useUI } from '../state/ui';
 import { Menu, MenuItem, MenuSeparator } from './primitives';
 import {
@@ -306,10 +306,10 @@ export const MenuBar: React.FC = () => {
 
             {menu.id === 'document' ? (
               <>
-                <MenuItem icon={Plus} onClick={run(() => insertPagesFromFiles(useUI.getState().currentPage + 1))}>
+                <MenuItem icon={Plus} onClick={run(() => insertPagesFromFiles(storeIndexFromVisual(useDoc.getState().pages, useUI.getState().currentPage + 1)))}>
                   Insert pages from file…
                 </MenuItem>
-                <MenuItem icon={FilePlus2} onClick={run(() => useDoc.getState().addBlankPage(undefined, currentPage + 1))}>
+                <MenuItem icon={FilePlus2} onClick={run(() => useDoc.getState().addBlankPage(undefined, storeIndexFromVisual(useDoc.getState().pages, currentPage + 1)))}>
                   Insert blank page
                 </MenuItem>
                 <MenuItem icon={ImageIcon} disabled={!activePages.length} onClick={run(() => addImageToPage(activePages[currentPage]?.id))}>
@@ -331,7 +331,10 @@ export const MenuBar: React.FC = () => {
                 <MenuItem icon={Scissors} disabled={!activePages.length} onClick={run(() => useDoc.getState().deletePages([activePages[currentPage]?.id].filter(Boolean) as string[]))}>
                   Delete current page
                 </MenuItem>
-                <MenuItem icon={Crop} disabled={!activePages.length} onClick={run(() => openDialog('compress'))}>
+                <MenuItem icon={Crop} disabled={!activePages.length} onClick={run(() => useUI.getState().setTool('crop'))}>
+                  Crop page…
+                </MenuItem>
+                <MenuItem icon={Gauge} disabled={!activePages.length} onClick={run(() => openDialog('compress'))}>
                   Compress & optimise…
                 </MenuItem>
                 <MenuSeparator />
@@ -525,7 +528,7 @@ export const MenuBar: React.FC = () => {
                   onClick={run(() => {
                     const page = activePages[useUI.getState().currentPage];
                     if (!page) return;
-                    useUI.getState().setStatusMessage(`Page ${page.index + 1} of ${activePages.length}`);
+                    useUI.getState().setStatusMessage(`Page ${useUI.getState().currentPage + 1} of ${activePages.length}`);
                   })}
                 >
                   Document summary

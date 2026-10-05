@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnnotationLayer, TextLayer, type PDFPageProxy } from 'pdfjs-dist';
-import type { AnyObject, PageEntry, Quad, Rect, SourceDoc, SourcePageData, TextEditOp } from '../core/types';
-import { getPageProxy, getPageTextData } from '../core/registry';
+import type { AnyObject, OcrPageResult, PageEntry, Quad, Rect, SourceDoc, SourcePageData, TextEditOp } from '../core/types';
+import { getPageProxy, getPageTextData, recoverSourceBytes } from '../core/registry';
 import { DEFAULT_ANNOTATE_COLORS, HIGHLIGHT_COLORS, STAMPS, UNIT_TO_POINTS } from '../core/constants';
 import { boundsOfPoints, toCssMatrix } from '../core/geometry';
+import { coverRectForWord, planOcrReplacements, recognizePage, sampleWordBackground } from '../core/ocr';
+import type { OcrWord, TextItem } from '../core/types';
 import { uid } from '../core/utils';
-import { useDoc } from '../state/store';
+import { displayedRotation, useDoc } from '../state/store';
+import { isSpaceHeld } from '../hooks/useShortcuts';
 import { useUI } from '../state/ui';
 import type { ToolId } from '../core/constants';
 import { ObjectView } from './objects';
@@ -25,6 +28,15 @@ import {
 
 type DragMode = 'none' | 'move' | 'resize' | 'rotate' | 'create' | 'pan' | 'marquee';
 
+interface InlineEditState {
+  item: TextEditOp;
+  rect: Rect;
+  value: string;
+  ocr?: boolean;
+  existingId?: string;
+  wordIndex?: number;
+}
+
 interface DragState {
   mode: DragMode;
   objectId?: string;
@@ -38,6 +50,7 @@ interface DragState {
   points?: { x: number; y: number }[];
   panStart?: { x: number; y: number; scrollLeft: number; scrollTop: number };
   startAngle?: number;
+  historyPushed?: boolean;
 }
 
 const CREATION_TOOLS: ToolId[] = [
@@ -62,6 +75,7 @@ const CREATION_TOOLS: ToolId[] = [
   'image',
   'eraser',
   'editText',
+  'crop',
 ];
 
 export interface PageViewProps {
@@ -86,8 +100,10 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
   const updateObject = useDoc((s) => s.updateObject);
   const updateObjects = useDoc((s) => s.updateObjects);
   const removeObjects = useDoc((s) => s.removeObjects);
-  const addComment = useDoc((s) => s.addComment);
   const addTextEdit = useDoc((s) => s.addTextEdit);
+  const searchResults = useUI((s) => s.searchResults);
+  const searchCursor = useUI((s) => s.searchCursor);
+  const crop = useDoc((s) => s.crops[entry.id]);
   const setEditingObject = useUI((s) => s.setEditingObject);
   const setSelection = useUI((s) => s.setSelection);
   const setRightPanel = useUI((s) => s.setRightPanel);
@@ -105,11 +121,14 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
   const [textData, setTextData] = useState<SourcePageData | null>(null);
   const [visible, setVisible] = useState(index < 3);
   const [error, setError] = useState<string | null>(null);
-  const [inlineEdit, setInlineEdit] = useState<{ item: TextEditOp; rect: Rect } | null>(null);
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState | null>(null);
+  const textEdits = useDoc((s) => s.textEdits);
+  const ocrPage = useDoc((s) => s.ocr[entry.id]);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const drag = useRef<DragState>({ mode: 'none', startScreen: { x: 0, y: 0 }, startPdf: { x: 0, y: 0 } });
+  const recognising = useRef(false);
 
-  const rotation = entry.rotation;
+  const rotation = displayedRotation(entry);
   const width = (entry.width || entry.mediaWidth || 612) * zoom;
   const height = (entry.height || entry.mediaHeight || 792) * zoom;
 
@@ -131,6 +150,13 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       .then((page) => {
         if (cancelled) return;
         setProxy(page);
+        if (index === 0) {
+          void recoverSourceBytes(source).then((bytes) => {
+            if (!bytes) {
+              useUI.getState().toast('warning', 'This file’s data was dropped from memory. Close it, open it again, then export or print.');
+            }
+          });
+        }
         // Keep page geometry in the store in sync with the real PDF.
         if (entry.mediaWidth === 0) {
           const view = page.view as number[];
@@ -300,22 +326,11 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       setEditingObject(null);
       const object = useDoc.getState().objects[id];
       if (object?.kind === 'note') {
-        if (text.trim()) {
-          addComment({
-            id: uid('thread'),
-            objectId: id,
-            pageId: entry.id,
-            author: 'You',
-            messages: [{ id: uid('msg'), author: 'You', body: text, at: Date.now() }],
-            status: 'open',
-            at: Date.now(),
-          });
-          setLeftPanel('comments');
-        }
+        useDoc.getState().syncNoteComment(id, entry.id, text);
         setLeftPanel('comments');
       }
     },
-    [updateObject, setEditingObject, addComment, entry.id, setLeftPanel],
+    [updateObject, setEditingObject, entry.id, setLeftPanel],
   );
 
   /* ------------------------- object creation helpers ---------------------- */
@@ -372,7 +387,8 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     // Acrobat keeps the tool active; we switch back to select for one-shot
     // objects (text, note, stamp, signature) to avoid accidental duplicates.
     const tool = useUI.getState().tool;
-    if (['text', 'note', 'stamp', 'signature', 'image', 'editText'].includes(tool)) useUI.getState().setTool('select');
+    // Edit text stays armed so the next click edits another word. One-shot tools return to select.
+    if (['text', 'note', 'stamp', 'signature', 'image'].includes(tool)) useUI.getState().setTool('select');
   }, []);
 
   /* ------------------------------- pointers ------------------------------- */
@@ -386,8 +402,13 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       currentPdf: startPdf,
     };
 
-    if (tool === 'hand') {
+    if (tool === 'hand' || isSpaceHeld()) {
       drag.current.mode = 'pan';
+      try {
+        (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      } catch {
+        /* the window listener still receives the move */
+      }
       return;
     }
 
@@ -428,7 +449,7 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     }
 
     if (tool === 'editText') {
-      void beginTextEdit(startPdf);
+      void beginTextEdit(startPdf, { x: event.clientX, y: event.clientY });
       return;
     }
 
@@ -618,14 +639,21 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       }
       case 'shape': {
         if (tiny && options.shape !== 'line' && options.shape !== 'arrow') break;
+        const isLine = options.shape === 'line' || options.shape === 'arrow';
+        const boxW = Math.max(rect.w, 1);
+        const boxH = Math.max(rect.h, 1);
+        const norm = (p: { x: number; y: number }) => ({
+          x: (p.x - rect.x) / boxW,
+          y: (p.y - rect.y) / boxH,
+        });
         addObject({
           id: uid('obj'),
           pageId: entry.id,
           kind: 'shape',
           x: rect.x,
           y: rect.y,
-          w: Math.max(rect.w, 2),
-          h: Math.max(rect.h, 2),
+          w: boxW,
+          h: boxH,
           rotation: 0,
           opacity: options.opacity,
           shape: options.shape,
@@ -633,8 +661,8 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
           strokeWidth: options.strokeWidth,
           fill: options.fill,
           dashed: options.dashed,
-          from: { x: 0, y: 0.5 },
-          to: { x: 1, y: 0.5 },
+          from: isLine ? norm(state.startPdf) : { x: 0, y: 0.5 },
+          to: isLine ? norm(endPdf) : { x: 1, y: 0.5 },
           createdAt: Date.now(),
         });
         break;
@@ -682,18 +710,24 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
       }
       case 'measure': {
         if (tiny) break;
+        const boxW = Math.max(rect.w, 1);
+        const boxH = Math.max(rect.h, 1);
+        const norm = (p: { x: number; y: number }) => ({
+          x: (p.x - rect.x) / boxW,
+          y: (p.y - rect.y) / boxH,
+        });
         addObject({
           id: uid('obj'),
           pageId: entry.id,
           kind: 'measure',
           x: rect.x,
           y: rect.y,
-          w: Math.max(rect.w, 1),
-          h: Math.max(rect.h, 1),
+          w: boxW,
+          h: boxH,
           rotation: 0,
           opacity: 1,
-          from: { x: 0, y: 1 },
-          to: { x: 1, y: 0 },
+          from: norm(state.startPdf),
+          to: norm(endPdf),
           stroke: options.color,
           strokeWidth: Math.max(0.75, options.strokeWidth * 0.6),
           pixelsPerUnit: UNIT_TO_POINTS[options.measureUnit] ?? 1,
@@ -701,6 +735,22 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
           scale: options.measureScale,
           createdAt: Date.now(),
         });
+        break;
+      }
+      case 'crop': {
+        if (rect.w < 8 || rect.h < 8) break;
+        const mediaW = entry.mediaWidth || entry.width || rect.w;
+        const mediaH = entry.mediaHeight || entry.height || rect.h;
+        const x = Math.max(0, Math.min(rect.x, mediaW - 8));
+        const y = Math.max(0, Math.min(rect.y, mediaH - 8));
+        useDoc.getState().setCrop(entry.id, {
+          x,
+          y,
+          w: Math.max(8, Math.min(rect.w, mediaW - x)),
+          h: Math.max(8, Math.min(rect.h, mediaH - y)),
+        });
+        toast('success', 'Crop set — it is applied when you export. Clear it from page properties.');
+        useUI.getState().setTool('select');
         break;
       }
       case 'text': {
@@ -752,9 +802,10 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
           rotation: 0,
           opacity: 1,
           field: kind,
-          name: `${kind}_${(objectList.length + 1).toString().padStart(2, '0')}`,
-          value: kind === 'dropdown' ? '' : '',
+          name: kind === 'radio' ? 'Choice' : `${kind}_${(objectList.length + 1).toString().padStart(2, '0')}`,
+          value: kind === 'radio' ? `Option ${objectList.filter((o) => o.kind === 'formfield' && o.field === 'radio').length + 1}` : '',
           options: kind === 'dropdown' ? ['Option 1', 'Option 2'] : undefined,
+          group: kind === 'radio' ? 'Choice' : undefined,
           fontSize: 10,
           checked: false,
           createdAt: Date.now(),
@@ -770,40 +821,157 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
   };
 
   /* ---------------------------- text editing ------------------------------ */
-  const beginTextEdit = async (pdfPoint: { x: number; y: number }) => {
-    const data = textData ?? (await getPageTextData(source, entry.sourceIndex));
-    setTextData(data);
-    const item = data.items.find((candidate) => {
-      const quad = candidate.quads[0];
-      return pdfPoint.x >= quad.x - 4 && pdfPoint.x <= quad.x + quad.w + 4 && pdfPoint.y >= quad.y - 4 && pdfPoint.y <= quad.y + quad.h + 4;
-    });
-    if (!item) {
-      toast('info', 'Click directly on existing text to edit it.');
-      return;
-    }
+  const openTextItem = (item: TextItem) => {
     const quad = item.quads[0];
+    const existing = findTextEdit(entry.id, item);
     setInlineEdit({
-      rect: quad,
+      rect: existing?.rect ?? quad,
+      value: existing?.text ?? item.str,
+      existingId: existing?.id,
       item: {
-        id: uid('edit'),
+        id: existing?.id ?? uid('edit'),
         pageId: entry.id,
         original: item.str,
-        text: item.str,
+        text: existing?.text ?? item.str,
         rect: quad,
         origin: item.origin,
         fontSize: item.fontSize,
         fontName: item.fontName,
+        color: existing?.color ?? '#000000',
+      },
+    });
+  };
+
+  const openOcrWord = (word: OcrWord, wordIndex: number) => {
+    const replacements = useDoc.getState().ocr[entry.id]?.replacements ?? [];
+    const existing =
+      replacements.find((item) => item.wordIndex === wordIndex) ??
+      replacements.find((item) => item.rect && rectsNear(item.rect, word.rect));
+    setInlineEdit({
+      ocr: true,
+      wordIndex,
+      existingId: existing?.id,
+      value: existing?.text ?? word.text,
+      rect: word.rect,
+      item: {
+        id: existing?.id ?? uid('edit'),
+        pageId: entry.id,
+        original: word.text,
+        text: existing?.text ?? word.text,
+        rect: word.rect,
+        origin: { x: word.rect.x, y: word.rect.y },
+        fontSize: Math.max(8, word.rect.h * 0.8),
+        fontName: 'Helvetica',
         color: '#000000',
       },
     });
+  };
+
+  const beginTextEdit = async (pdfPoint: { x: number; y: number }, client?: { x: number; y: number }) => {
+    if (recognising.current) return;
+    const painted = [...useDoc.getState().textEdits].reverse().find((edit) => edit.pageId === entry.id && pointInRect(pdfPoint, edit.rect, 6));
+    if (painted) {
+      setInlineEdit({
+        item: painted,
+        rect: painted.rect,
+        value: painted.text,
+        existingId: painted.id,
+      });
+      return;
+    }
+
+    const data = textData ?? (await getPageTextData(source, entry.sourceIndex));
+    setTextData(data);
+    const spanText = client ? spanTextAt(client.x, client.y, pageRef.current) : '';
+    const item = nearestTextItem(data.items, pdfPoint, spanText);
+    if (item) {
+      openTextItem(item);
+      return;
+    }
+
+    const existing = useDoc.getState().ocr[entry.id];
+    const knownWord = nearestOcrWord(existing?.words ?? [], pdfPoint, 36);
+    if (knownWord) {
+      openOcrWord(knownWord.word, knownWord.index);
+      return;
+    }
+
+    // A scan (or a page whose text layer doesn't cover the click) is recognised
+    // on the spot so the word under the cursor can be edited.
+    const sparse = textCoverage(data.items, entry.width || entry.mediaWidth, entry.height || entry.mediaHeight) < 0.04;
+    if (data.items.length && !sparse) {
+      toast('info', 'Click directly on a word. Scanned areas are recognised automatically.');
+      return;
+    }
+
+    recognising.current = true;
+    useUI.getState().setBusy({ active: true, label: 'Recognising this page so you can edit it', progress: 12 });
+    try {
+      const result = await recognizePage(source, entry.sourceIndex, 'eng', 2.2, (status, progress) => {
+        useUI.getState().setBusy({
+          active: true,
+          label: `Recognising this page — ${status || 'reading text'}`,
+          progress: Math.max(12, Math.round(progress * 100)),
+        });
+      });
+      const stored = { ...result, pageId: entry.id, replacements: existing?.replacements };
+      useDoc.getState().setOcr(entry.id, stored);
+      const word = nearestOcrWord(stored.words, pdfPoint, 48);
+      if (word) {
+        openOcrWord(word.word, word.index);
+        toast('success', 'Page recognised. Change the word and press Enter — it stays on the page.');
+        return;
+      }
+      placeEditableText(pdfPoint);
+      toast('info', stored.words.length ? 'No word under the cursor — type to add text here.' : 'No text was recognised on this page. Type to add some.');
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : 'Could not recognise this page.');
+      placeEditableText(pdfPoint);
+    } finally {
+      recognising.current = false;
+      useUI.getState().setBusy({ active: false, label: '', progress: 0 });
+    }
+  };
+
+  const placeEditableText = (pdfPoint: { x: number; y: number }) => {
+    const id = uid('obj');
+    const h = Math.max(22, options.fontSize * 1.6);
+    addObject({
+      id,
+      pageId: entry.id,
+      kind: 'textbox',
+      x: pdfPoint.x,
+      y: pdfPoint.y - h * 0.25,
+      w: Math.max(160, 220 / zoom),
+      h,
+      rotation: 0,
+      opacity: 1,
+      text: '',
+      style: defaultStyle(),
+      createdAt: Date.now(),
+    });
+    setSelection([id]);
+    setEditingObject(id);
+    setRightPanel('properties');
   };
 
   /* ------------------------- move / resize / rotate ----------------------- */
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const state = drag.current;
+      if (state.mode === 'pan') {
+        const dx = event.clientX - state.startScreen.x;
+        const dy = event.clientY - state.startScreen.y;
+        window.dispatchEvent(new CustomEvent('pdfmaster:pan', { detail: { dx, dy } }));
+        state.startScreen = { x: event.clientX, y: event.clientY };
+        return;
+      }
       if (state.mode !== 'move' && state.mode !== 'resize' && state.mode !== 'rotate') return;
       if (!state.objectId || !state.startBox || !viewportMatrix) return;
+      if (!state.historyPushed) {
+        useDoc.getState().pushHistory(state.mode === 'move' ? 'Move object' : 'Transform object');
+        state.historyPushed = true;
+      }
       const pdfPoint = toPdf(event.clientX, event.clientY);
       const object = useDoc.getState().objects[state.objectId];
       if (!object) return;
@@ -838,7 +1006,7 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     };
     const onUp = () => {
       const state = drag.current;
-      if (state.mode === 'move' || state.mode === 'resize' || state.mode === 'rotate') {
+      if (state.mode === 'move' || state.mode === 'resize' || state.mode === 'rotate' || state.mode === 'pan') {
         drag.current = { mode: 'none', startScreen: { x: 0, y: 0 }, startPdf: { x: 0, y: 0 } };
       }
     };
@@ -853,6 +1021,11 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
   /* ------------------------------ object layer ---------------------------- */
   const startObjectDrag = (object: AnyObject) => (event: React.PointerEvent) => {
     if (event.button !== 0) return;
+    if (isSpaceHeld()) {
+      event.stopPropagation();
+      drag.current = { mode: 'pan', startScreen: { x: event.clientX, y: event.clientY }, startPdf: { x: 0, y: 0 } };
+      return;
+    }
     if (useUI.getState().tool !== 'select') return;
     event.stopPropagation();
     const pdfPoint = toPdf(event.clientX, event.clientY);
@@ -864,7 +1037,6 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     const active = useUI.getState().selection.includes(object.id) ? useUI.getState().selection : [object.id];
     setSelection(active);
     setRightPanel('properties');
-    useDoc.getState().pushHistory('Move object');
     drag.current = {
       mode: 'move',
       objectId: object.id,
@@ -885,7 +1057,6 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
     if (!object) return;
     const box: Box = { x: object.x, y: object.y, w: object.w, h: object.h, rotation: object.rotation };
     const pdfPoint = toPdf(event.clientX, event.clientY);
-    useDoc.getState().pushHistory('Transform object');
     drag.current = {
       mode: handle === 'rotate' ? 'rotate' : 'resize',
       objectId: object.id,
@@ -925,7 +1096,16 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
           ['--scale-round-x' as string]: '1px',
           ['--scale-round-y' as string]: '1px',
         } as React.CSSProperties}
-        onPointerDown={tool === 'select' || tool === 'hand' || tool === 'eraser' || tool === 'editText' ? onSurfacePointerDown : undefined}
+        onPointerDown={tool === 'select' || tool === 'hand' || tool === 'eraser' ? onSurfacePointerDown : undefined}
+        onDoubleClick={
+          tool === 'select'
+            ? (event) => {
+                const pdfPoint = toPdf(event.clientX, event.clientY);
+                if (hitTest(pdfPoint)) return;
+                void beginTextEdit(pdfPoint, { x: event.clientX, y: event.clientY });
+              }
+            : undefined
+        }
       >
         <canvas ref={canvasRef} className="block" style={{ width, height }} />
         {entry.mediaWidth === 0 ? (
@@ -989,13 +1169,68 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
             {handleSpecs.map((handle) => (
               <div
                 key={handle.id}
-                className="pm-handle"
-                style={{ left: handle.x - 5, top: handle.y - 5, cursor: handle.cursor, pointerEvents: 'auto' }}
+                className={handle.id === 'rotate' ? 'pm-handle pm-handle-rotate' : 'pm-handle'}
+                title={handle.id === 'rotate' ? 'Rotate' : 'Resize'}
+                style={{
+                  left: handle.x - (handle.id === 'rotate' ? 9 : 5),
+                  top: handle.y - (handle.id === 'rotate' ? 9 : 5),
+                  cursor: handle.cursor,
+                  pointerEvents: 'auto',
+                }}
                 onPointerDown={handleHandleDrag(handle.id)}
               >
                 {handle.id === 'rotate' ? <span className="absolute -inset-1" /> : null}
               </div>
             ))}
+          </div>
+        ) : null}
+
+        {/* search hits */}
+        {matrix && searchResults.some((match) => match.pageId === entry.id) ? (
+          <div className="pointer-events-none absolute inset-0 z-[5]">
+            {searchResults.map((match, matchIndex) => {
+              if (match.pageId !== entry.id) return null;
+              const a = pdfToScreen(matrix, { x: match.x, y: match.y + match.h });
+              const b = pdfToScreen(matrix, { x: match.x + match.w, y: match.y });
+              const active = searchResults[searchCursor]?.pageId === entry.id && searchResults[searchCursor] === match;
+              return (
+                <div
+                  key={`${match.pageId}-${matchIndex}`}
+                  className="absolute"
+                  style={{
+                    left: Math.min(a.x, b.x),
+                    top: Math.min(a.y, b.y),
+                    width: Math.max(2, Math.abs(b.x - a.x)),
+                    height: Math.max(2, Math.abs(b.y - a.y)),
+                    background: active ? 'rgba(255, 120, 40, 0.55)' : 'rgba(255, 212, 0, 0.45)',
+                    outline: active ? '2px solid #ff7828' : '1px solid rgba(180, 140, 0, 0.8)',
+                    mixBlendMode: 'multiply',
+                  }}
+                />
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* crop preview: dim everything outside the kept rectangle */}
+        {crop && matrix && crop.w > 1 && crop.h > 1 ? (
+          <div className="pointer-events-none absolute inset-0 z-[3]">
+            {(() => {
+              const a = pdfToScreen(matrix, { x: crop.x, y: crop.y + crop.h });
+              const b = pdfToScreen(matrix, { x: crop.x + crop.w, y: crop.y });
+              return (
+                <div
+                  className="absolute border border-amber-500"
+                  style={{
+                    left: Math.min(a.x, b.x),
+                    top: Math.min(a.y, b.y),
+                    width: Math.abs(b.x - a.x),
+                    height: Math.abs(b.y - a.y),
+                    boxShadow: '0 0 0 9999px rgba(22, 23, 26, 0.55)',
+                  }}
+                />
+              );
+            })()}
           </div>
         ) : null}
 
@@ -1023,6 +1258,14 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
           </div>
         ) : null}
 
+        {matrix ? (
+          <LiveEditOverlay
+            matrix={matrix}
+            edits={textEdits.filter((edit) => edit.pageId === entry.id)}
+            ocr={ocrPage}
+          />
+        ) : null}
+
         {/* creation surface: catches drags for drawing tools */}
         {CREATION_TOOLS.includes(tool) && tool !== 'image' && tool !== 'signature' ? (
           <div
@@ -1039,18 +1282,45 @@ export const PageView: React.FC<PageViewProps> = ({ entry, index, source }) => {
         {inlineEdit && matrix ? (
           <InlineTextEditor
             rect={inlineEdit.rect}
-            value={inlineEdit.item.original}
+            value={inlineEdit.value}
             matrix={matrix}
             zoom={zoom}
             onCancel={() => setInlineEdit(null)}
             onCommit={(text) => {
               const item = inlineEdit.item;
-              if (text !== item.original) {
+              if (text === inlineEdit.value) {
+                setInlineEdit(null);
+                return;
+              }
+              if (inlineEdit.ocr) {
+                if (inlineEdit.existingId) {
+                  if (text === item.original) useDoc.getState().removeOcrReplacement(entry.id, inlineEdit.existingId);
+                  else useDoc.getState().updateOcrReplacement(entry.id, inlineEdit.existingId, { text });
+                } else if (text !== item.original) {
+                  const id = uid('ocr-rep');
+                  useDoc.getState().addOcrReplacement(entry.id, {
+                    id,
+                    original: item.original,
+                    text,
+                    bg: '#ffffff',
+                    wordIndex: inlineEdit.wordIndex,
+                    rect: item.rect,
+                  });
+                  void sampleWordBackground(source, entry.sourceIndex, item.rect).then((bg) => {
+                    useDoc.getState().updateOcrReplacement(entry.id, id, { bg });
+                  });
+                }
+                toast('success', 'Updated on the page. Save a copy when you want the file.');
+              } else if (inlineEdit.existingId) {
+                if (text === item.original) useDoc.getState().removeTextEdit(inlineEdit.existingId);
+                else useDoc.getState().updateTextEdit(inlineEdit.existingId, text);
+                toast('success', 'Updated on the page. Save a copy when you want the file.');
+              } else if (text !== item.original) {
                 addTextEdit({ ...item, text, id: uid('edit') });
-                toast('success', 'Text updated — the change is applied on export and print.');
+                toast('success', 'Updated on the page. Save a copy when you want the file.');
               }
               setInlineEdit(null);
-              setToolAfterCreate();
+              if (useUI.getState().tool !== 'editText') setToolAfterCreate();
             }}
           />
         ) : null}
@@ -1065,6 +1335,7 @@ function cursorForTool(tool: ToolId): string {
   switch (tool) {
     case 'shape':
     case 'redact':
+    case 'crop':
     case 'link':
     case 'measure':
     case 'text':
@@ -1082,9 +1353,188 @@ function cursorForTool(tool: ToolId): string {
       return 'copy';
     case 'eraser':
       return 'not-allowed';
+    case 'editText':
+      return 'text';
+    case 'hand':
+      return 'grab';
     default:
       return 'default';
   }
+}
+
+function spanTextAt(clientX: number, clientY: number, page: HTMLElement | null): string {
+  if (!page || typeof document === 'undefined') return '';
+  const stack = document.elementsFromPoint(clientX, clientY);
+  for (const node of stack) {
+    if (!(node instanceof HTMLElement) || !page.contains(node)) continue;
+    const span = node.closest('.textLayer span');
+    const text = span?.textContent?.replace(/\s+/g, ' ').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function textCoverage(items: TextItem[], pageW: number, pageH: number): number {
+  const area = Math.max(1, pageW * pageH);
+  const covered = items.reduce((sum, item) => sum + Math.max(0, item.quads[0]?.w ?? 0) * Math.max(0, item.quads[0]?.h ?? 0), 0);
+  return covered / area;
+}
+
+function nearestTextItem(items: TextItem[], point: { x: number; y: number }, spanText = ''): TextItem | null {
+  const wanted = spanText.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (wanted) {
+    const matches = items.filter((item) => item.str.replace(/\s+/g, ' ').trim().toLowerCase() === wanted);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      return matches.reduce((best, item) => (itemDistance(item, point) < itemDistance(best, point) ? item : best));
+    }
+  }
+  let best: TextItem | null = null;
+  let bestDist = Infinity;
+  for (const item of items) {
+    const quad = item.quads[0];
+    if (!quad) continue;
+    const pad = Math.max(8, item.fontSize * 0.45);
+    const width = Math.max(quad.w, item.str.length * item.fontSize * 0.45, item.fontSize);
+    const inside =
+      point.x >= quad.x - pad &&
+      point.x <= quad.x + width + pad &&
+      point.y >= quad.y - pad &&
+      point.y <= quad.y + Math.max(quad.h, item.fontSize) + pad;
+    if (inside) return item;
+    const dist = itemDistance(item, point);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = item;
+    }
+  }
+  if (best && bestDist <= Math.max(22, best.fontSize * 1.4)) return best;
+  return null;
+}
+
+function itemDistance(item: TextItem, point: { x: number; y: number }): number {
+  const quad = item.quads[0];
+  if (!quad) return Infinity;
+  const width = Math.max(quad.w, item.fontSize);
+  const height = Math.max(quad.h, item.fontSize);
+  return Math.hypot(point.x - (quad.x + width / 2), point.y - (quad.y + height / 2));
+}
+
+function pointInRect(point: { x: number; y: number }, rect: Rect, pad = 0): boolean {
+  return point.x >= rect.x - pad && point.x <= rect.x + rect.w + pad && point.y >= rect.y - pad && point.y <= rect.y + rect.h + pad;
+}
+
+function rectsNear(a: Rect, b: Rect): boolean {
+  return Math.abs(a.x - b.x) < 2 && Math.abs(a.y - b.y) < 2 && Math.abs(a.w - b.w) < 4;
+}
+
+function findTextEdit(pageId: string, item: TextItem): TextEditOp | undefined {
+  const quad = item.quads[0];
+  return useDoc.getState().textEdits.find((edit) => {
+    if (edit.pageId !== pageId) return false;
+    if (
+      edit.origin &&
+      item.origin &&
+      Math.abs(edit.origin.x - item.origin.x) < 1.5 &&
+      Math.abs(edit.origin.y - item.origin.y) < 1.5
+    ) {
+      return true;
+    }
+    if (!quad) return false;
+    return Math.abs(edit.rect.x - quad.x) < 2 && Math.abs(edit.rect.y - quad.y) < 2;
+  });
+}
+
+function screenBox(matrix: [number, number, number, number, number, number], rect: Rect) {
+  const anchor = pdfToScreen(matrix, { x: rect.x, y: rect.y + rect.h });
+  const bottom = pdfToScreen(matrix, { x: rect.x + rect.w, y: rect.y });
+  return {
+    left: Math.min(anchor.x, bottom.x),
+    top: Math.min(anchor.y, bottom.y),
+    width: Math.abs(bottom.x - anchor.x),
+    height: Math.abs(bottom.y - anchor.y),
+  };
+}
+
+function LiveEditOverlay({
+  matrix,
+  edits,
+  ocr,
+}: {
+  matrix: [number, number, number, number, number, number];
+  edits: TextEditOp[];
+  ocr?: OcrPageResult;
+}) {
+  const boxes: { key: string; rect: Rect; text: string; bg: string; color: string }[] = [];
+  if (ocr?.replacements?.length) {
+    const plan = planOcrReplacements(ocr.words, ocr.replacements);
+    for (const [index, item] of plan.replace) {
+      const word = ocr.words[index];
+      if (!word) continue;
+      boxes.push({
+        key: `ocr-${index}`,
+        rect: coverRectForWord(word.rect),
+        text: item.text,
+        bg: item.bg || '#ffffff',
+        color: '#111111',
+      });
+    }
+  }
+  for (const edit of edits) {
+    boxes.push({ key: edit.id, rect: edit.rect, text: edit.text, bg: '#ffffff', color: edit.color || '#111111' });
+  }
+  if (!boxes.length) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[6]">
+      {boxes.map((box) => {
+        const screen = screenBox(matrix, box.rect);
+        const fontSize = Math.max(8, screen.height * 0.78);
+        return (
+          <div
+            key={box.key}
+            className="absolute overflow-hidden whitespace-nowrap"
+            style={{
+              left: screen.left - 1,
+              top: screen.top - 1,
+              width: Math.max(screen.width + 2, box.text.length * fontSize * 0.62),
+              height: screen.height + 2,
+              background: box.bg,
+              color: box.color,
+              fontSize,
+              lineHeight: `${screen.height}px`,
+              fontFamily: 'Helvetica, Arial, sans-serif',
+              paddingLeft: 1,
+            }}
+          >
+            {box.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function nearestOcrWord(
+  words: OcrWord[],
+  point: { x: number; y: number },
+  maxDist: number,
+): { word: OcrWord; index: number } | null {
+  let best: OcrWord | null = null;
+  let bestIndex = -1;
+  let bestDist = Infinity;
+  for (const [index, word] of words.entries()) {
+    const r = word.rect;
+    const pad = Math.max(4, r.h * 0.35);
+    const inside = point.x >= r.x - pad && point.x <= r.x + r.w + pad && point.y >= r.y - pad && point.y <= r.y + r.h + pad;
+    if (inside) return { word, index };
+    const dist = Math.hypot(point.x - (r.x + r.w / 2), point.y - (r.y + r.h / 2));
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = word;
+      bestIndex = index;
+    }
+  }
+  return best && bestIndex >= 0 && bestDist <= maxDist ? { word: best, index: bestIndex } : null;
 }
 
 /** Await already-resolved values without making the caller async. */

@@ -206,8 +206,12 @@ export function createFormField(
       break;
     }
     case 'radio': {
-      const rg = form.createRadioGroup(name);
-      const option = field.value || field.group || 'Option 1';
+      // Radios that share a group name are one AcroForm field. A unique name
+      // per widget made every button its own group, so selecting one never
+      // cleared the others.
+      const groupName = (field.group || 'Choice').replace(/[^\w\-. ]/g, '_').trim() || 'Choice';
+      const rg = radioGroup(form, groupName);
+      const option = (field.value || field.name || 'Option').replace(/[^\w\-. ]/g, '_').trim() || 'Option';
       rg.addOptionToPage(option, page, common);
       if (field.checked) rg.select(option);
       break;
@@ -228,6 +232,14 @@ export function createFormField(
     }
   }
   void fontName;
+}
+
+function radioGroup(form: ReturnType<PDFDocument['getForm']>, name: string) {
+  try {
+    return form.getRadioGroup(name);
+  } catch {
+    return form.createRadioGroup(name);
+  }
 }
 
 function uniqueFieldName(existing: string[], desired: string): string {

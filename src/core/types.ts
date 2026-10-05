@@ -208,7 +208,10 @@ export interface LinkObject extends BaseObject {
   kind: 'link';
   url: string;
   linkType: 'url' | 'page';
+  /** Visual page index at the time the link was set. Falls back when page id is missing. */
   targetPage?: number;
+  /** Stable target. Survives reorder and soft-delete, unlike the index. */
+  targetPageId?: string;
   hint?: string;
 }
 
@@ -258,6 +261,13 @@ export interface PageInfo {
 }
 
 /** A source PDF that makes up part of the working document. */
+/** Unrotated media box and /Rotate, captured when the source is opened. */
+export interface SourcePageInfo {
+  mediaWidth: number;
+  mediaHeight: number;
+  baseRotation: number;
+}
+
 export interface SourceDoc {
   id: string;
   name: string;
@@ -267,6 +277,11 @@ export interface SourceDoc {
   /** Password for protected sources, if supplied. */
   password?: string;
   pageCount: number;
+  /**
+   * Per-page geometry from the source PDF. Present for newly opened files so
+   * rotation and crop are correct before any page has been painted.
+   */
+  pageInfo?: SourcePageInfo[];
   /** Whether this document was created from a blank page. */
   blank?: boolean;
   size: number;
@@ -314,7 +329,10 @@ export interface CommentThread {
 
 export interface Bookmark {
   id: string;
+  /** Visual page index at the time the bookmark was created (fallback). */
   pageIndex: number;
+  /** Stable page id. Preferred over pageIndex after reorders and deletions. */
+  pageId?: string;
   title: string;
   createdAt: number;
 }
@@ -490,12 +508,16 @@ export interface OcrWord {
  */
 export interface OcrReplacement {
   id: string;
-  /** Recognised word to replace (all occurrences on the page). */
+  /** Recognised word to replace. Without wordIndex, every occurrence on the page. */
   original: string;
   /** Visible replacement text. */
   text: string;
   /** Background colour sampled from around the word (hex). */
   bg?: string;
+  /** When set, only this word is replaced — later edits of the same spelling stay independent. */
+  wordIndex?: number;
+  /** PDF-space rect of the word that was clicked. */
+  rect?: Rect;
 }
 
 export interface OcrPageResult {

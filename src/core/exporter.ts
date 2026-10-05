@@ -9,7 +9,7 @@ import JSZip from 'jszip';
 import { buildPdf, BuildError, type BuildInput, type BuildResult, type ProgressFn } from './engine';
 import { getDocument, type PdfDocumentProxy } from './pdfjs';
 import { bytesToBlob, csvEscape, sanitizeFilename } from './utils';
-import type { ExportFormat, ExportOptions } from './types';
+import type { AnyObject, ExportFormat, ExportOptions, PageEntry } from './types';
 
 export interface ExportRequest {
   input: BuildInput;
@@ -69,7 +69,11 @@ export async function exportDocument(req: ExportRequest, onProgress?: ProgressFn
     case 'pdf':
     case 'pdf-a':
     case 'pdf-flat': {
-      const { result, filename } = await materialise(request, onProgress);
+      const indices = pageIndices(request);
+      const total = request.input.pages.filter((page) => !page.deleted).length;
+      const exportsAll = indices.length === total && indices.every((index, position) => index === position);
+      const input = exportsAll ? request.input : subsetBuildInput(request.input, indices);
+      const { result, filename } = await materialise({ ...request, input }, onProgress);
       if (options.format === 'pdf-a' && !result.warnings.some((w) => /PDF\/A/.test(w))) {
         result.warnings.push('PDF/A written: fonts used by PDFmaster are embedded, but validate with veraPDF for archival use.');
       }
@@ -209,26 +213,31 @@ export async function extractPageTexts(bytes: Uint8Array, indices?: number[]): P
       const page = await proxy.getPage(index + 1);
       const content = await page.getTextContent();
       const items = content.items
-        .map((raw) => raw as { str?: string; transform?: number[]; width?: number; height?: number; hasEOL?: boolean })
+        .map((raw) => raw as { str?: string; transform?: number[]; width?: number; height?: number; hasEOL?: boolean; dir?: string })
         .filter((item) => item.str !== undefined && item.transform);
-      // group runs into visual lines by their baseline y
-      const rows = new Map<number, { x: number; str: string }[]>();
+      // Group runs into visual lines. Text-item transforms are PDF user space
+      // (y up); convert through the page viewport so rotated pages and normal
+      // pages both read top-to-bottom, left-to-right.
+      const viewport = page.getViewport({ scale: 1 });
+      const rows = new Map<number, { x: number; str: string; rtl: boolean }[]>();
       for (const item of items) {
-        const y = Math.round((item.transform![5] as number) / 2) * 2;
+        const [vx, vy] = viewport.convertToViewportPoint(item.transform![4] as number, item.transform![5] as number);
+        const y = Math.round(vy / 2) * 2;
         const bucket = rows.get(y) ?? [];
-        bucket.push({ x: item.transform![4] as number, str: item.str! });
+        bucket.push({ x: vx, str: item.str!, rtl: item.dir === 'rtl' });
         rows.set(y, bucket);
       }
       const lines = [...rows.entries()]
         .sort((a, b) => a[0] - b[0])
-        .map(([, bucket]) =>
-          bucket
-            .sort((a, b) => a.x - b.x)
+        .map(([, bucket]) => {
+          const rtl = bucket.filter((entry) => entry.rtl).length > bucket.length / 2;
+          return bucket
+            .sort((a, b) => (rtl ? b.x - a.x : a.x - b.x))
             .map((entry) => entry.str)
             .join(' ')
             .replace(/\s+/g, ' ')
-            .trim(),
-        )
+            .trim();
+        })
         .filter((line) => line.length > 0);
       pages.push({ pageIndex: index, lines, text: lines.join('\n') });
     }
@@ -238,24 +247,99 @@ export async function extractPageTexts(bytes: Uint8Array, indices?: number[]): P
   }
 }
 
-function commentAppendix(input: BuildInput): string[] {
+function commentAppendix(input: BuildInput, pages: PageEntry[]): string[] {
+  const active = input.pages.filter((page) => !page.deleted);
   const lines: string[] = [];
-  for (const page of input.pages) {
+  for (const page of pages) {
+    const visual = active.findIndex((entry) => entry.id === page.id);
+    const label = visual >= 0 ? visual + 1 : page.index + 1;
     for (const obj of input.objectsByPage[page.id] ?? []) {
-      if (obj.kind === 'note' && obj.text.trim()) lines.push(`Page ${page.index + 1} — ${obj.text.trim()}`);
+      if (obj.kind === 'note' && obj.text.trim()) lines.push(`Page ${label} — ${obj.text.trim()}`);
       if ((obj.kind === 'highlight' || obj.kind === 'underline' || obj.kind === 'strike' || obj.kind === 'squiggly') && obj.text?.trim()) {
-        lines.push(`Page ${page.index + 1} — marked "${obj.text.trim()}"`);
+        lines.push(`Page ${label} — marked "${obj.text.trim()}"`);
       }
     }
   }
   return lines;
 }
 
+/** Pages the export dialog actually asked for, in visual order. */
+function selectedPages(req: ExportRequest): PageEntry[] {
+  const active = req.input.pages.filter((page) => !page.deleted);
+  return pageIndices(req)
+    .map((index) => active[index])
+    .filter((page): page is PageEntry => Boolean(page));
+}
+
+/**
+ * Restricts a build to the visual page indices chosen in the export dialog.
+ * PDF export used to ignore that choice and write every page.
+ */
+export function subsetBuildInput(input: BuildInput, visualIndices: number[]): BuildInput {
+  const active = input.pages.filter((page) => !page.deleted);
+  const selected = visualIndices.map((index) => active[index]).filter((page): page is PageEntry => Boolean(page));
+  if (!selected.length) return input;
+  const selectedIds = new Set(selected.map((page) => page.id));
+  const idToNew = new Map(selected.map((page, index) => [page.id, index]));
+  const remap = new Map<number, number>();
+  visualIndices.forEach((visual, index) => {
+    if (active[visual]) remap.set(visual, index);
+  });
+
+  const objectsByPage: BuildInput['objectsByPage'] = {};
+  for (const page of selected) {
+    objectsByPage[page.id] = (input.objectsByPage[page.id] ?? [])
+      .map((obj) => remapPageLink(obj, remap, idToNew))
+      .filter((obj): obj is AnyObject => Boolean(obj));
+  }
+
+  const watermark =
+    input.watermark.pages === 'all'
+      ? input.watermark
+      : {
+          ...input.watermark,
+          pages: input.watermark.pages
+            .map((index) => remap.get(index))
+            .filter((index): index is number => index !== undefined),
+        };
+
+  const bookmarks = input.bookmarks
+    .filter((bookmark) => (bookmark.pageId ? selectedIds.has(bookmark.pageId) : remap.has(bookmark.pageIndex)))
+    .map((bookmark) => ({
+      ...bookmark,
+      pageIndex:
+        bookmark.pageId && idToNew.has(bookmark.pageId) ? idToNew.get(bookmark.pageId)! : (remap.get(bookmark.pageIndex) ?? 0),
+    }));
+
+  return {
+    ...input,
+    pages: selected.map((page, index) => ({ ...page, index, deleted: false })),
+    objectsByPage,
+    watermark,
+    bookmarks,
+    textEdits: input.textEdits.filter((edit) => selectedIds.has(edit.pageId)),
+    crops: Object.fromEntries(Object.entries(input.crops).filter(([id]) => selectedIds.has(id))),
+    ocr: Object.fromEntries(Object.entries(input.ocr).filter(([id]) => selectedIds.has(id))),
+  };
+}
+
+function remapPageLink(
+  obj: AnyObject,
+  remap: Map<number, number>,
+  idToNew: Map<string, number>,
+): AnyObject | null {
+  if (obj.kind !== 'link' || obj.linkType !== 'page') return obj;
+  const mapped = obj.targetPageId ? idToNew.get(obj.targetPageId) : obj.targetPage === undefined ? 0 : remap.get(obj.targetPage);
+  if (mapped === undefined) return null;
+  return { ...obj, targetPage: mapped };
+}
+
 async function exportTextLike(req: ExportRequest, onProgress?: ProgressFn): Promise<ExportOutput> {
   const { result, filename } = await materialise(req, onProgress);
   const pages = await extractPageTexts(result.bytes, pageIndices(req));
   const warnings = [...result.warnings];
-  const comments = req.includeComments === false ? [] : commentAppendix(req.input);
+  const chosen = selectedPages(req);
+  const comments = req.includeComments === false ? [] : commentAppendix(req.input, chosen);
 
   switch (req.options.format) {
     case 'txt': {
@@ -313,7 +397,7 @@ async function exportTextLike(req: ExportRequest, onProgress?: ProgressFn): Prom
           lines: page.lines,
           text: page.text,
         })),
-        annotations: Object.values(req.input.objectsByPage).flat(),
+        annotations: chosen.flatMap((page) => req.input.objectsByPage[page.id] ?? []),
         comments,
       };
       return {

@@ -6,12 +6,12 @@ import { useUI } from '../../state/ui';
 import { BODY_FONT_SIZES, STAMPS, TEXT_FONTS } from '../../core/constants';
 import type { BatesSettings, HeaderFooterSettings, PageNumberSettings, WatermarkSettings } from '../../core/types';
 import { OCR_LANGUAGES } from '../../core/ocr';
-import { defaultExportOptions, runExport, runOcr, saveSplit } from '../actions';
+import { defaultExportOptions, offerDownload, runExport, runOcr, saveSplit } from '../actions';
 import { assetFromCanvas } from '../../core/assets';
 import { inspectP12, signPdf, type SignatureInfo } from '../../core/signing';
 import { buildInputFromStore } from '../actions';
 import { buildPdf } from '../../core/engine';
-import { downloadBlobObject, formatBytes, sanitizeFilename, uid } from '../../core/utils';
+import { formatBytes, sanitizeFilename, uid } from '../../core/utils';
 import { passwordStrength } from '../../core/security';
 
 /* ------------------------------------------------------------------ */
@@ -1154,14 +1154,10 @@ export const DigitalSignDialog: React.FC<{ open: boolean; onClose: () => void }>
                   signingTime: new Date(),
                   widgetRect: { x: 36, y: 36, w: 180, h: 60 },
                 });
-                const saved = await downloadBlobObject(
-                  new Blob([signed.slice().buffer as ArrayBuffer], { type: 'application/pdf' }),
-                  `${sanitizeFilename(useDoc.getState().docName)}-signed.pdf`,
-                );
-                if (saved) {
-                  useUI.getState().toast('success', 'Signed PDF saved (PAdES, SHA-256).');
-                  onClose();
-                }
+                const filename = `${sanitizeFilename(useDoc.getState().docName)}-signed.pdf`;
+                offerDownload(new Blob([signed.slice().buffer as ArrayBuffer], { type: 'application/pdf' }), filename);
+                useUI.getState().toast('success', `${filename} is signed and ready. Click Download.`);
+                onClose();
               } catch (err) {
                 setError(err instanceof Error ? err.message : 'Signing failed.');
               } finally {

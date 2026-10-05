@@ -8,6 +8,8 @@
  */
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, hexToRgb, registerFontkit } from './pdflib';
+import { normalizePdfBytes } from './pdfbytes';
+import { openDocument } from './pdfjs';
 import type { SourceDoc } from './types';
 import { uid, sanitizeFilename } from './utils';
 
@@ -25,7 +27,7 @@ export async function fileToSource(file: File | Blob, name?: string, password?: 
   const bytes = new Uint8Array(await file.arrayBuffer());
   const warnings: string[] = [];
 
-  if (ext === 'pdf' || (bytes[0] === 0x25 && bytes[1] === 0x50)) {
+  if (ext === 'pdf' || looksLikePdf(bytes)) {
     return { source: await sourceFromPdfBytes(bytes, filename, password), warnings };
   }
   if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'].includes(ext)) {
@@ -66,24 +68,60 @@ export async function fileToSource(file: File | Blob, name?: string, password?: 
   throw new Error(`Unsupported file type: .${ext || 'unknown'}`);
 }
 
-async function sourceFromPdfBytes(bytes: Uint8Array, name: string, password?: string): Promise<SourceDoc> {
-  // Parse it once here so a broken/encrypted file fails fast with a clear error.
+function looksLikePdf(bytes: Uint8Array): boolean {
+  const limit = Math.min(bytes.length, 1024);
+  for (let i = 0; i <= limit - 5; i++) {
+    if (bytes[i] === 0x25 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x44 && bytes[i + 3] === 0x46) return true;
+  }
+  return false;
+}
+
+async function sourceFromPdfBytes(raw: Uint8Array, name: string, password?: string): Promise<SourceDoc> {
+  // Keep a private copy. The viewer later hands bytes to pdf.js, which
+  // transfers that buffer into a worker and would otherwise empty this one.
+  const bytes = normalizePdfBytes(raw);
   let pageCount = 0;
+  let pageInfo: SourceDoc['pageInfo'];
   try {
-    const doc = await PDFDocument.load(bytes, { password, ignoreEncryption: !password, throwOnInvalidObject: false });
+    const doc = await PDFDocument.load(bytes, { password, ignoreEncryption: !password, throwOnInvalidObject: false, updateMetadata: false });
     pageCount = doc.getPageCount();
+    pageInfo = doc.getPages().map((page) => {
+      const { width, height } = page.getSize();
+      const angle = ((page.getRotation().angle % 360) + 360) % 360;
+      return { mediaWidth: width, mediaHeight: height, baseRotation: angle };
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/encrypted|password/i.test(message)) throw new Error('This PDF is password protected.');
-    throw new Error(`Could not open ${name}: ${message}`);
+    // pdf.js renders many files pdf-lib rejects (preamble, odd xref). Keep
+    // them open so the user can still view, edit and export a visual copy.
+    try {
+      const proxy = await openDocument(bytes.slice(), { password });
+      pageCount = proxy.numPages;
+      pageInfo = [];
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await proxy.getPage(i);
+        const view = page.view as number[];
+        pageInfo.push({
+          mediaWidth: view[2] - view[0],
+          mediaHeight: view[3] - view[1],
+          baseRotation: ((page.rotate % 360) + 360) % 360,
+        });
+      }
+      await (proxy as unknown as { destroy?: () => Promise<void> }).destroy?.().catch(() => {});
+    } catch {
+      throw new Error(`Could not open ${name}: ${message}`);
+    }
   }
   if (!pageCount) throw new Error(`${name} has no pages.`);
+  const owned = bytes.slice();
   return {
     id: uid('src'),
     name,
-    bytes,
+    bytes: owned,
     pageCount,
-    size: bytes.byteLength,
+    pageInfo,
+    size: owned.byteLength,
     loadedAt: Date.now(),
     password,
   };

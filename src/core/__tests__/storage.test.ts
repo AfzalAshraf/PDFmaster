@@ -117,6 +117,14 @@ describe('storage', () => {
     expect(recents[0].pages).toBe(2);
   });
 
+  it('restores a version 2 session', async () => {
+    removeIndexedDB();
+    await saveSession({ ...session, version: 2, docName: 'Current session' });
+    const loaded = await loadSession();
+    expect(loaded?.version).toBe(2);
+    expect(loaded?.docName).toBe('Current session');
+  });
+
   it('uses IndexedDB when it is available', async () => {
     restoreIndexedDB();
     await saveSession({ ...session, docName: 'IndexedDB test' });

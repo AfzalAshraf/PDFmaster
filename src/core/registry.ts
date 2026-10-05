@@ -7,6 +7,7 @@
  * text editing and the Office/Markdown exports.
  */
 import { openDocument, type PdfDocumentProxy, type PdfPageProxy } from './pdfjs';
+import { hasPdfHeader, normalizePdfBytes } from './pdfbytes';
 import type { Quad, SearchMatch, SourceDoc, SourcePageData, TextItem } from './types';
 import { normalizeText } from './utils';
 
@@ -29,11 +30,16 @@ function entryFor(sourceId: string): Entry {
 
 export async function getDocumentProxy(source: SourceDoc): Promise<PdfDocumentProxy> {
   const entry = entryFor(source.id);
-  if (entry.proxy) return entry.proxy;
+  if (entry.proxy) {
+    void healSourceBytes(source, entry.proxy);
+    return entry.proxy;
+  }
   if (!entry.loading) {
-    entry.loading = openDocument(source.bytes, { password: source.password })
+    const bytes = normalizePdfBytes(source.bytes);
+    entry.loading = openDocument(bytes, { password: source.password })
       .then((proxy) => {
         entry.proxy = proxy;
+        void healSourceBytes(source, proxy);
         return proxy;
       })
       .catch((err) => {
@@ -42,6 +48,41 @@ export async function getDocumentProxy(source: SourceDoc): Promise<PdfDocumentPr
       });
   }
   return entry.loading;
+}
+
+/**
+ * The viewer can still hold the file after the store's buffer was transferred
+ * to the pdf.js worker. Copy it back so export and print can read a real PDF.
+ */
+export async function recoverSourceBytes(source: SourceDoc): Promise<Uint8Array | null> {
+  const direct = normalizePdfBytes(source.bytes);
+  if (hasPdfHeader(direct)) {
+    source.bytes = direct;
+    source.size = direct.byteLength;
+    return direct;
+  }
+  try {
+    const proxy = await getDocumentProxy(source);
+    const recovered = normalizePdfBytes(await proxy.getData());
+    if (!hasPdfHeader(recovered)) return null;
+    source.bytes = recovered;
+    source.size = recovered.byteLength;
+    return recovered;
+  } catch {
+    return null;
+  }
+}
+
+async function healSourceBytes(source: SourceDoc, proxy: PdfDocumentProxy): Promise<void> {
+  if (hasPdfHeader(normalizePdfBytes(source.bytes))) return;
+  try {
+    const recovered = normalizePdfBytes(await proxy.getData());
+    if (!hasPdfHeader(recovered)) return;
+    source.bytes = recovered;
+    source.size = recovered.byteLength;
+  } catch {
+    /* the next export will try again */
+  }
 }
 
 export async function getPageProxy(source: SourceDoc, index: number): Promise<PdfPageProxy> {
@@ -60,42 +101,62 @@ export function clearRegistry(): void {
   for (const id of [...entries.keys()]) forgetSource(id);
 }
 
+/**
+ * pdf.js `getTextContent()` transforms are already in PDF user space (the same
+ * coordinates `drawText` uses). Treating them as viewport points and converting
+ * "back" places every run in the wrong place, so search highlights miss and
+ * in-place edits fail to find the content-stream operator.
+ */
+export function geometryFromTextItem(item: { transform: number[]; width?: number; height?: number }): {
+  origin: { x: number; y: number };
+  quad: Quad;
+  fontSize: number;
+} {
+  const [a, b, c, d, e, f] = item.transform;
+  const width = item.width ?? 0;
+  const height = item.height ?? (Math.hypot(c, d) || Math.hypot(a, b) || 10);
+  const dirLen = Math.hypot(a, b) || 1;
+  const upLen = Math.hypot(c, d) || height || 1;
+  const endX = e + (width * a) / dirLen;
+  const endY = f + (width * b) / dirLen;
+  const upX = e + (height * c) / upLen;
+  const upY = f + (height * d) / upLen;
+  const quad = quadFromPoints([
+    [e, f],
+    [endX, endY],
+    [upX, upY],
+    [endX + (upX - e), endY + (upY - f)],
+  ]);
+  return {
+    origin: { x: e, y: f },
+    quad,
+    fontSize: Math.max(1, upLen || dirLen || height),
+  };
+}
+
 /** Text content of a page, converted into PDF user space (cached). */
 export async function getPageTextData(source: SourceDoc, index: number): Promise<SourcePageData> {
   const entry = entryFor(source.id);
   const cached = entry.text.get(index);
   if (cached) return cached;
   const page = await getPageProxy(source, index);
-  const viewport = page.getViewport({ scale: 1, rotation: page.rotate });
   const content = await page.getTextContent();
   const items: TextItem[] = [];
   let text = '';
   for (const raw of content.items) {
     const item = raw as { str?: string; transform?: number[]; width?: number; height?: number; fontName?: string; dir?: string; hasEOL?: boolean };
     if (!item.str || !item.transform) {
-      if (item.hasEOL) text += '\n';
+      if ((item as { hasEOL?: boolean }).hasEOL) text += '\n';
       continue;
     }
-    const [a, b, c, d, e, f] = item.transform;
-    const width = item.width ?? 0;
-    const height = item.height ?? 10;
-    // The item transform maps text space -> viewport space: (a,b) is the
-    // (scaled) baseline direction, (c,d) the "up" direction of the run.
-    const dirLen = Math.hypot(a, b) || 1;
-    const upLen = Math.hypot(c, d) || 1;
-    const start = viewport.convertToPdfPoint(e, f);
-    const end = viewport.convertToPdfPoint(e + (width * a) / dirLen, f + (width * b) / dirLen);
-    const up = viewport.convertToPdfPoint(e + (height * c) / upLen, f + (height * d) / upLen);
-    const opposite = viewport.convertToPdfPoint(
-      e + (width * a) / dirLen + (height * c) / upLen,
-      f + (width * b) / dirLen + (height * d) / upLen,
-    );
-    const quad = quadFromPoints([start, end, up, opposite]);
+    const transform = item.transform;
+    const [a, b, c, d, e, f] = transform;
+    const geo = geometryFromTextItem({ ...item, transform });
     items.push({
       str: item.str,
-      quads: [quad],
-      origin: { x: start[0], y: start[1] },
-      fontSize: Math.abs(upLen) || Math.abs(dirLen) || 10,
+      quads: [geo.quad],
+      origin: geo.origin,
+      fontSize: geo.fontSize,
       fontName: item.fontName ?? '',
       dir: item.dir === 'rtl' ? 'rtl' : 'ltr',
       transform: [a, b, c, d, e, f],
@@ -153,6 +214,8 @@ export function findInPage(
       const endRatio = item.str.length ? (at + needle.length) / item.str.length : 1;
       const x = quad.x + quad.w * startRatio;
       const w = Math.max(2, quad.w * (endRatio - startRatio));
+      const snippetStart = Math.max(0, at - 18);
+      const snippetEnd = Math.min(item.str.length, at + needle.length + 18);
       matches.push({
         pageIndex,
         pageId,
@@ -161,6 +224,8 @@ export function findInPage(
         w,
         h: quad.h,
         text: item.str.slice(at, at + needle.length),
+        itemIndex: data.items.indexOf(item),
+        snippet: item.str.slice(snippetStart, snippetEnd).replace(/\s+/g, ' ').trim(),
         quads: [{ x, y: quad.y, w, h: quad.h }],
       });
     }
@@ -180,11 +245,12 @@ export function normalizedPageText(data: SourcePageData): string {
 }
 
 /** Renders a small thumbnail as a data URL (used by the page rail). */
-export async function renderThumbnail(source: SourceDoc, index: number, width = 132): Promise<string> {
+export async function renderThumbnail(source: SourceDoc, index: number, width = 132, rotation?: number): Promise<string> {
   const page = await getPageProxy(source, index);
-  const base = page.getViewport({ scale: 1, rotation: page.rotate });
+  const rot = ((rotation ?? page.rotate) % 360 + 360) % 360;
+  const base = page.getViewport({ scale: 1, rotation: rot });
   const scale = width / base.width;
-  const viewport = page.getViewport({ scale, rotation: page.rotate });
+  const viewport = page.getViewport({ scale, rotation: rot });
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.floor(viewport.width));
   canvas.height = Math.max(1, Math.floor(viewport.height));

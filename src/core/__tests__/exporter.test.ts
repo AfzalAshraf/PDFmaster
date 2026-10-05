@@ -97,4 +97,44 @@ describe('exportDocument', () => {
     expect(out.stats?.editErrors).toHaveLength(1);
     expect(out.stats?.editErrors[0]).toContain('Missing');
   });
+
+  it('exports only the requested page range', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([200, 200]);
+    doc.addPage([300, 300]);
+    const bytes = await doc.save();
+    const source: SourceDoc = { id: 'src1', name: 'two.pdf', bytes, pageCount: 2, size: bytes.length, loadedAt: 1 };
+    const input = await makeFixture();
+    input.sources = { src1: source };
+    input.pages = [0, 1].map((sourceIndex) => ({
+      id: `p${sourceIndex}`,
+      index: sourceIndex,
+      sourceId: 'src1',
+      sourceIndex,
+      rotation: 0,
+      baseRotation: 0,
+      width: 200,
+      height: 200,
+      mediaWidth: 200,
+      mediaHeight: 200,
+    }));
+    const out = await exportDocument({
+      input,
+      filename: 'range',
+      options: { format: 'pdf', quality: 92, scale: 2, pages: 'custom', customPages: '2', pdfA: false, embedFonts: false, ocr: true, flatten: false },
+      activePageIndex: 0,
+    });
+    const saved = await PDFDocument.load(await readBlob(out.blob));
+    expect(saved.getPageCount()).toBe(1);
+    expect(saved.getPage(0).getSize().width).toBe(300);
+  });
 });
+
+function readBlob(blob: Blob): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(blob);
+  });
+}

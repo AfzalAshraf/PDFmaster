@@ -66,7 +66,8 @@ async function deleteKey(key: string): Promise<void> {
 }
 
 export interface SavedSession {
-  version: 1;
+  /** 1 = rotation field included source /Rotate. 2 = rotation is user-only. */
+  version: 1 | 2;
   savedAt: number;
   docName: string;
   sources: SourceDoc[];
@@ -123,8 +124,10 @@ export async function saveSession(session: SavedSession): Promise<void> {
 
 export async function loadSession(): Promise<SavedSession | undefined> {
   const session = await readKey<SavedSession>(SESSION_KEY);
-  if (!session || session.version !== 1) return undefined;
-  return session;
+  if (!session?.pages) return undefined;
+  const version = session.version ?? 1;
+  if (version !== 1 && version !== 2) return undefined;
+  return { ...session, version };
 }
 
 export async function clearSession(): Promise<void> {

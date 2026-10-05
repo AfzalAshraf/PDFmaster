@@ -48,23 +48,14 @@ export const NewDocumentDialog: React.FC<{ open: boolean; onClose: () => void }>
             variant="primary"
             icon={FilePlus2}
             onClick={async () => {
-              await createBlankDocument(size, customMode ? custom : undefined);
-              const store = useDoc.getState();
+              const preset = PAGE_SIZES[size];
+              const portrait: [number, number] = customMode
+                ? [custom.w, custom.h]
+                : [preset?.w ?? 595, preset?.h ?? 842];
+              const dims: [number, number] = orientation === 'landscape' ? [portrait[1], portrait[0]] : portrait;
+              await createBlankDocument(size, { w: dims[0], h: dims[1] });
               for (let i = 1; i < count; i += 1) {
-                await store.addBlankPage(
-                  customMode
-                    ? orientation === 'portrait'
-                      ? [custom.w, custom.h]
-                      : [custom.h, custom.w]
-                    : orientation === 'portrait'
-                      ? [PAGE_SIZES[size]?.w ?? 595, PAGE_SIZES[size]?.h ?? 842]
-                      : [PAGE_SIZES[size]?.h ?? 842, PAGE_SIZES[size]?.w ?? 595],
-                  store.pages.length,
-                );
-              }
-              if (orientation === 'landscape' && !customMode) {
-                const first = useDoc.getState().pages[0];
-                if (first) useDoc.getState().rotatePages([first.id], 90);
+                await useDoc.getState().addBlankPage(dims, useDoc.getState().pages.length);
               }
               onClose();
             }}
@@ -443,8 +434,8 @@ const SHORTCUTS: { group: string; items: [string, string][] }[] = [
   {
     group: 'Tools',
     items: [
-      ['V / H', 'Select / pan'],
-      ['T / E', 'Add text / edit text'],
+      ['V / H', 'Select / pan — or click those buttons'],
+      ['T / E', 'Add text / edit text — or click those buttons'],
       ['I / R / D', 'Image / shape / draw'],
       ['U / N / S', 'Highlight / note / stamp'],
       ['X', 'Redact'],
@@ -460,8 +451,13 @@ export const ShortcutsDialog: React.FC<{ open: boolean; onClose: () => void }> =
     onClose={onClose}
     title="Keyboard shortcuts"
     width={620}
-    footer={<Button variant="primary" onClick={onClose}>Close</Button>}
+    footer={<Button variant="primary" onClick={onClose}>Close and use the tool bar</Button>}
   >
+    <p className="mb-4 rounded-md border border-accent/40 bg-accent/10 p-3 text-xs leading-5 text-ink-100">
+      These are keyboard keys, not the tools. The tools are the labeled buttons under the menu — Edit text, Edit pages
+      (rotate, insert, delete, crop), Fill &amp; sign, and Save a copy. Click one, then click the page. Close this
+      dialog to use them.
+    </p>
     <div className="grid grid-cols-2 gap-5">
       {SHORTCUTS.map((section) => (
         <section key={section.group} className="space-y-1.5">

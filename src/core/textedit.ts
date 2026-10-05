@@ -377,6 +377,12 @@ export function applyPageEdits(
     }
 
     if (name !== 'Tj' && name !== 'TJ' && name !== "'" && name !== '"') continue;
+    // ' and " show text on the *next* line. Advance before measuring, or the
+    // run is matched (and repainted) on the previous baseline.
+    if (name === "'" || name === '"') {
+      textMatrix.line = mul6(textMatrix.line, [1, 0, 0, 1, 0, -leading]);
+      textMatrix.m = [...textMatrix.line];
+    }
     const target = name === "'" || name === '"' ? op.args[op.args.length - 1] : op.args[0];
     const text = isString(target) ? decodeOperandText(target) : arrayText(target);
     if (!text) continue;

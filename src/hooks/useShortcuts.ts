@@ -18,7 +18,14 @@ const TOOL_KEYS: Record<string, ToolId> = {
   n: 'note',
   s: 'stamp',
   x: 'redact',
+  c: 'crop',
 };
+
+let spaceHeld = false;
+
+export function isSpaceHeld(): boolean {
+  return spaceHeld;
+}
 
 /** Global keyboard shortcuts — the same set advertised in Help ▸ Shortcuts. */
 export function useShortcuts(): void {
@@ -27,6 +34,13 @@ export function useShortcuts(): void {
       const ui = useUI.getState();
       const doc = useDoc.getState();
       const mod = event.ctrlKey || event.metaKey;
+
+      if (event.code === 'Space' && !isEditableTarget(event.target)) {
+        event.preventDefault();
+        spaceHeld = true;
+        document.body.classList.add('pm-panning');
+        return;
+      }
 
       if (event.key === 'Escape') {
         if (ui.dialog) ui.closeDialog();
@@ -187,11 +201,13 @@ export function useShortcuts(): void {
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
         const dy = event.key === 'ArrowUp' ? step : event.key === 'ArrowDown' ? -step : 0;
         doc.updateObjects(
-          ui.selection.map((id) => {
-            const object = doc.objects[id];
-            return { id, patch: { x: object.x + dx, y: object.y + dy } };
-          }),
-          { history: false },
+          ui.selection
+            .map((id) => {
+              const object = doc.objects[id];
+              if (!object) return null;
+              return { id, patch: { x: object.x + dx, y: object.y + dy } };
+            })
+            .filter((patch): patch is { id: string; patch: { x: number; y: number } } => Boolean(patch)),
         );
         return;
       }
@@ -202,7 +218,36 @@ export function useShortcuts(): void {
       }
     };
 
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return;
+      spaceHeld = false;
+      document.body.classList.remove('pm-panning', 'pm-grabbing');
+    };
+    const onPointerDown = () => {
+      if (spaceHeld || useUI.getState().tool === 'hand') document.body.classList.add('pm-grabbing');
+    };
+    const onPointerUp = () => document.body.classList.remove('pm-grabbing');
+    const syncHand = () => document.body.classList.toggle('pm-hand', useUI.getState().tool === 'hand');
+    syncHand();
+    const unsubscribe = useUI.subscribe(syncHand);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerup', onPointerUp);
+    const onBlur = () => {
+      spaceHeld = false;
+      document.body.classList.remove('pm-panning', 'pm-grabbing');
+    };
+    window.addEventListener('blur', onBlur);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('blur', onBlur);
+      spaceHeld = false;
+      document.body.classList.remove('pm-panning', 'pm-grabbing', 'pm-hand');
+    };
   }, []);
 }
