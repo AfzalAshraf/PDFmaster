@@ -50,6 +50,14 @@ describe('planOcrReplacements', () => {
     expect(plan.replace.get(3)?.text).toBe('great');
   });
 
+  it('targets one word when wordIndex is set, leaving other matches alone', () => {
+    const list: OcrWord[] = [...words, { text: 'Strategy', rect: { x: 300, y: 500, w: 58, h: 14 } }];
+    const plan = planOcrReplacements(list, [rep('Strategy', 'Tactics', { wordIndex: 1 })]);
+    expect(plan.replace.size).toBe(1);
+    expect(plan.replace.get(1)?.text).toBe('Tactics');
+    expect(plan.replace.has(4)).toBe(false);
+  });
+
   it('keeps the sampled background colour for the covering box', () => {
     const plan: OcrReplacePlan = planOcrReplacements(words, [rep('and', '&', { bg: '#f2efe9' })]);
     expect(plan.replace.get(2)?.bg).toBe('#f2efe9');

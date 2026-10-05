@@ -75,6 +75,11 @@ export interface HandleSpec {
 
 export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rotate';
 
+/** Circular-arrow cursor so rotation is not mistaken for the pan hand. */
+export const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#fff" stroke="#111" stroke-width="1.6" d="M12 4.5a7.5 7.5 0 1 1-6.4 3.6"/><path fill="#111" d="M12 1.2 16.2 6.4 10.2 6.8z"/></svg>',
+)}") 12 12, crosshair`;
+
 const HANDLE_CURSORS: Record<HandleId, string> = {
   nw: 'nwse-resize',
   n: 'ns-resize',
@@ -84,7 +89,7 @@ const HANDLE_CURSORS: Record<HandleId, string> = {
   s: 'ns-resize',
   sw: 'nesw-resize',
   w: 'ew-resize',
-  rotate: 'grab',
+  rotate: ROTATE_CURSOR,
 };
 
 /** Handle positions in *screen* space for an object. */

@@ -20,7 +20,7 @@ const RAIL: { group: string; tools: ToolId[] }[] = [
   { group: 'Comment', tools: ['highlight', 'underline', 'strike', 'squiggly', 'note', 'link', 'measure'] },
   { group: 'Stamp', tools: ['stamp', 'signature'] },
   { group: 'Forms', tools: ['form-text', 'form-checkbox', 'form-radio', 'form-dropdown', 'form-button'] },
-  { group: 'Protect', tools: ['redact', 'eraser'] },
+  { group: 'Protect', tools: ['redact', 'crop', 'eraser'] },
 ];
 
 const PANEL_BUTTONS: { panel: LeftPanel; icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; label: string }[] = [

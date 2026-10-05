@@ -18,6 +18,11 @@ export const Viewer: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const activePages = useMemo(() => pages.filter((p) => !p.deleted), [pages]);
 
+  useEffect(() => {
+    const max = Math.max(0, activePages.length - 1);
+    if (useUI.getState().currentPage > max) useUI.getState().setCurrentPage(max);
+  }, [activePages.length]);
+
   /* ------------------------------- panning ------------------------------- */
   useEffect(() => {
     const onPan = (event: Event) => {
@@ -111,12 +116,12 @@ export const Viewer: React.FC = () => {
       data-testid="viewer"
     >
       <div className="min-h-full px-6 py-4">
-        {activePages.map((entry) => {
+        {activePages.map((entry, visualIndex) => {
           const source = sources[entry.sourceId];
           if (!source) return null;
-          // PageView discovers the real page geometry and reports it to the
-          // store, so it must mount even before the size is known.
-          return <PageView key={entry.id} entry={entry} index={entry.index} source={source} />;
+          // Visual index, not the store index: deleted pages stay in the
+          // array, and navigation/search address the pages the user can see.
+          return <PageView key={entry.id} entry={entry} index={visualIndex} source={source} />;
         })}
         <div className="h-16" />
       </div>

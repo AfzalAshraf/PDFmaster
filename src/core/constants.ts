@@ -1,7 +1,7 @@
 /** Shared constants: tools, palettes, font list, page sizes, units. */
 
 export const APP_NAME = 'PDFmaster';
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.3.0';
 export const DOC_EXT = '.pdf';
 
 export const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
@@ -99,6 +99,7 @@ export type ToolId =
   | 'link'
   | 'measure'
   | 'redact'
+  | 'crop'
   | 'eraser'
   | 'form-text'
   | 'form-checkbox'
@@ -124,6 +125,7 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
   link: { id: 'link', label: 'Link', group: 'annotate', icon: 'Link2', description: 'Add a clickable link' },
   measure: { id: 'measure', label: 'Measure', group: 'annotate', icon: 'Ruler', description: 'Measure a distance' },
   redact: { id: 'redact', label: 'Redact', shortcut: 'X', group: 'protect', icon: 'Eraser', description: 'Mark content for redaction' },
+  crop: { id: 'crop', label: 'Crop', shortcut: 'C', group: 'pages', icon: 'Crop', description: 'Drag to set the page crop box' },
   eraser: { id: 'eraser', label: 'Erase object', group: 'edit', icon: 'Trash2', description: 'Click an object to delete it' },
   'form-text': { id: 'form-text', label: 'Text field', group: 'forms', icon: 'FormInput', description: 'Add a fillable text field' },
   'form-checkbox': { id: 'form-checkbox', label: 'Checkbox', group: 'forms', icon: 'SquareCheck', description: 'Add a checkbox' },

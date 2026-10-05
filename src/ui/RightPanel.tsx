@@ -47,7 +47,16 @@ import { BODY_FONT_SIZES, COLOR_PALETTE, HIGHLIGHT_COLORS, STAMPS, TEXT_FONTS } 
 import type { AnyObject, FormFieldObject, PageId } from '../core/types';
 import { planOcrReplacements, sampleWordBackground } from '../core/ocr';
 import { sanitizeFilename, uid } from '../core/utils';
-import { defaultExportOptions, runExport, saveSplit } from './actions';
+import { defaultExportOptions, quickSave, runExport, saveSplit } from './actions';
+import {
+  cropCurrentPage,
+  deleteCurrentPage,
+  duplicateCurrentPage,
+  insertBlankPage,
+  rotateCurrentPage,
+  showOrganizePages,
+  useEditText,
+} from './pageActions';
 import { assetFromFile } from '../core/assets';
 
 export const RightPanel: React.FC = () => {
@@ -56,7 +65,7 @@ export const RightPanel: React.FC = () => {
   if (panel === 'none') return null;
 
   const titles: Record<Exclude<typeof panel, 'none'>, string> = {
-    tools: 'Quick tools',
+    tools: 'Tools',
     properties: 'Properties',
     security: 'Protect',
     export: 'Export',
@@ -106,13 +115,13 @@ const QuickTools: React.FC = () => {
     icon: React.ComponentType<{ size?: number | string; className?: string; strokeWidth?: number }>;
     run: () => void;
   }[] = [
-    { label: 'Edit text & images', hint: 'Rewrite existing PDF text', icon: Type, run: () => setTool('editText') },
+    { label: 'Edit text', hint: 'Click a word — the change stays on the page', icon: Type, run: useEditText },
     { label: 'Add text', hint: 'Place a new text box', icon: Type, run: () => setTool('text') },
     { label: 'Insert image', hint: 'Place a picture on the page', icon: Layers, run: () => setTool('image') },
     { label: 'Comment', hint: 'Highlight, sticky notes, markup', icon: MessageSquare, run: () => setTool('highlight') },
     { label: 'Sign yourself', hint: 'Draw or type a signature', icon: Signature, run: () => openDialog('sign') },
     { label: 'Fill & sign', hint: 'Complete form fields', icon: CornerDownRight, run: () => setRightPanel('sign') },
-    { label: 'Organise pages', hint: 'Reorder, rotate, delete, extract', icon: Layers, run: () => setRightPanel('organize') },
+    { label: 'Edit pages', hint: 'Rotate, delete, insert, reorder, crop', icon: Layers, run: showOrganizePages },
     { label: 'Compress', hint: 'Shrink the file for sharing', icon: Gauge, run: () => openDialog('compress') },
     { label: 'Recognise text', hint: 'OCR scanned pages', icon: ScanText, run: () => openDialog('ocr') },
     { label: 'Protect', hint: 'Passwords, permissions, redaction', icon: Shield, run: () => openDialog('security') },
@@ -135,8 +144,20 @@ const QuickTools: React.FC = () => {
           </button>
         ))}
       </div>
+      <div className="space-y-1.5">
+        <p className="text-2xs font-semibold uppercase tracking-wider text-ink-400">This page</p>
+        <div className="grid grid-cols-2 gap-1.5">
+          <Button size="sm" variant="secondary" onClick={() => rotateCurrentPage(-90)}>Rotate left</Button>
+          <Button size="sm" variant="secondary" onClick={() => rotateCurrentPage(90)}>Rotate right</Button>
+          <Button size="sm" variant="secondary" onClick={() => void insertBlankPage()}>Insert page</Button>
+          <Button size="sm" variant="secondary" onClick={duplicateCurrentPage}>Duplicate</Button>
+          <Button size="sm" variant="secondary" onClick={deleteCurrentPage}>Delete page</Button>
+          <Button size="sm" variant="secondary" onClick={cropCurrentPage}>Crop</Button>
+        </div>
+      </div>
+      <Button variant="primary" icon={FileDown} full onClick={() => void quickSave()}>Save a copy</Button>
       <p className="rounded-md border border-ink-700 bg-ink-800/40 p-2 text-2xs leading-4 text-ink-400">
-        {pages.length} page(s) in this document. Everything runs locally — your files are never uploaded.
+        {pages.length} page(s). Click Edit text, then click a word. Save a copy downloads the PDF — this preview cannot choose a folder by itself.
       </p>
     </div>
   );

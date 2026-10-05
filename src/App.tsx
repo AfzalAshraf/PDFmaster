@@ -6,6 +6,8 @@ import { useTheme } from './hooks/useTheme';
 import { MenuBar } from './ui/MenuBar';
 import { DocumentTabs } from './ui/DocumentTabs';
 import { Toolbar } from './ui/Toolbar';
+import { EditRibbon } from './ui/EditRibbon';
+import { FileReadyDialog } from './ui/FileReadyDialog';
 import { ToolRail } from './ui/ToolRail';
 import { Viewer } from './ui/Viewer';
 import { LeftPanel } from './ui/LeftPanel';
@@ -17,6 +19,7 @@ import { CommandPalette } from './ui/CommandPalette';
 import { BusyOverlay, ToastStack } from './ui/primitives';
 import { HomeView } from './ui/HomeView';
 import { importFiles, openProjectFile, restoreAutosavedSession } from './ui/actions';
+import { storeIndexFromVisual } from './state/store';
 import { getDesktopBridge } from './core/desktop';
 import { loadPreferences, savePreferences } from './core/storage';
 
@@ -220,7 +223,7 @@ const App: React.FC = () => {
       const dropTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-page-index]');
       if (dropTarget) {
         const index = Number((dropTarget as HTMLElement).dataset.pageIndex ?? 0);
-        void importFiles(files, { at: index });
+        void importFiles(files, { at: storeIndexFromVisual(useDoc.getState().pages, index) });
       } else {
         void importFiles(files, { replace: false });
       }
@@ -244,12 +247,15 @@ const App: React.FC = () => {
       <Toolbar />
 
       {hasDocument ? (
-        <div className="relative flex min-h-0 flex-1">
-          <ToolRail />
-          {leftPanel !== 'none' && !collapsed.left ? <LeftPanel /> : null}
-          <Viewer />
-          {rightPanel !== 'none' && !collapsed.right ? <RightPanel /> : null}
-          <PageNavigation />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <EditRibbon />
+          <div className="relative flex min-h-0 flex-1">
+            <ToolRail />
+            {leftPanel !== 'none' && !collapsed.left ? <LeftPanel /> : null}
+            <Viewer />
+            {rightPanel !== 'none' && !collapsed.right ? <RightPanel /> : null}
+            <PageNavigation />
+          </div>
         </div>
       ) : (
         <HomeView />
@@ -257,6 +263,7 @@ const App: React.FC = () => {
 
       <StatusBar />
       <Dialogs />
+      <FileReadyDialog />
       <CommandPalette />
       <ToastStack />
       <BusyOverlay />

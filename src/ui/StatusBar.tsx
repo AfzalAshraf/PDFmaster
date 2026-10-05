@@ -16,6 +16,8 @@ export const StatusBar: React.FC = () => {
   const savedAt = useDoc((s) => s.lastSavedAt);
   const dirty = useDoc((s) => s.dirty);
   const setRightPanel = useUI((s) => s.setRightPanel);
+  const fileOffer = useUI((s) => s.fileOffer);
+  const showFileOffer = useUI((s) => s.showFileOffer);
   const [online, setOnline] = useState(navigator.onLine);
 
   useEffect(() => {
@@ -63,6 +65,16 @@ export const StatusBar: React.FC = () => {
             <HardDrive size={10} strokeWidth={1.75} />
             {formatBytes(totalBytes)}
           </span>
+        ) : null}
+        {fileOffer ? (
+          <button
+            type="button"
+            onClick={() => showFileOffer()}
+            className="max-w-[180px] truncate font-medium text-accent hover:text-white"
+            title="Open the download dialog. The file is not on disk until you click Download."
+          >
+            {fileOffer.filename}
+          </button>
         ) : null}
         {savedAt ? (
           <span

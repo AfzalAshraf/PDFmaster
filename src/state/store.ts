@@ -28,6 +28,7 @@ import type {
 import { blankSource } from '../core/importers';
 import { clamp, uid } from '../core/utils';
 import { forgetSource } from '../core/registry';
+import { normalizePdfBytes } from '../core/pdfbytes';
 import { addRecent, clearSession, loadSession as loadStoredSession, saveSession, type SavedSession } from '../core/storage';
 
 export const defaultMeta = (): DocumentMeta => ({
@@ -164,6 +165,7 @@ export interface DocState {
   setPageRotation: (id: PageId, rotation: number) => void;
   reversePages: () => void;
   setCrop: (id: PageId, rect: Rect | null) => void;
+  setCrops: (ids: PageId[], rect: Rect | null) => void;
   syncPageDims: (id: PageId, dims: { mediaWidth: number; mediaHeight: number; baseRotation: number }) => void;
 
   /* objects */
@@ -177,6 +179,7 @@ export interface DocState {
 
   /* content edits */
   addTextEdit: (edit: TextEditOp) => void;
+  updateTextEdit: (id: string, text: string) => void;
   removeTextEdit: (id: string) => void;
 
   /* assets */
@@ -190,8 +193,11 @@ export interface DocState {
 
   /* bookmarks */
   addBookmark: (bookmark: Bookmark) => void;
+  addBookmarks: (bookmarks: Bookmark[]) => void;
   updateBookmark: (id: string, patch: Partial<Bookmark>) => void;
   removeBookmark: (id: string) => void;
+  /** Creates or updates the comment thread attached to a sticky note. */
+  syncNoteComment: (objectId: string, pageId: PageId, body: string, author?: string) => void;
 
   /* settings */
   setMeta: (patch: Partial<DocumentMeta>) => void;
@@ -205,6 +211,7 @@ export interface DocState {
   setOcr: (pageId: PageId, result: OcrPageResult) => void;
   clearOcr: () => void;
   addOcrReplacement: (pageId: PageId, replacement: OcrReplacement) => void;
+  updateOcrReplacement: (pageId: PageId, id: string, patch: { text?: string; bg?: string }) => void;
   removeOcrReplacement: (pageId: PageId, id: string) => void;
 
   /* history & persistence */
@@ -221,11 +228,21 @@ export interface DocState {
 
 const HISTORY_LIMIT = 80;
 
-/** Re-derives page display sizes and keeps indices contiguous. */
+/** User rotation plus the source page's own /Rotate, normalised to 0/90/180/270. */
+export function displayedRotation(page: Pick<PageEntry, 'baseRotation' | 'rotation'>): number {
+  return (((page.baseRotation + page.rotation) % 360) + 360) % 360;
+}
+
+/**
+ * Re-derives page display sizes and keeps indices contiguous.
+ * `rotation` stays the *user* rotation. Folding `baseRotation` into it (the
+ * previous behaviour) made every later rotate and the exporter add the source
+ * rotation a second time, so scanned/phone PDFs exported sideways.
+ */
 export function normalizePages(pages: PageEntry[]): PageEntry[] {
   return pages.map((page, index) => {
-    const rotation = (((page.baseRotation + page.rotation) % 360) + 360) % 360;
-    const swapped = rotation === 90 || rotation === 270;
+    const rotation = ((page.rotation % 360) + 360) % 360;
+    const swapped = displayedRotation({ ...page, rotation }) % 180 !== 0;
     return {
       ...page,
       index,
@@ -234,6 +251,36 @@ export function normalizePages(pages: PageEntry[]): PageEntry[] {
       height: swapped ? page.mediaWidth : page.mediaHeight,
     };
   });
+}
+
+/**
+ * Sessions saved before the rotation fix stored `baseRotation + userRotation`
+ * in `rotation`. Subtract the source rotation once so those files keep the
+ * orientation the user was looking at, and new saves (version >= 2) are left
+ * alone.
+ */
+export function migrateStoredPages(pages: PageEntry[], version: number): PageEntry[] {
+  if (version >= 2) return pages;
+  return pages.map((page) => ({
+    ...page,
+    rotation: (((page.rotation - (page.baseRotation || 0)) % 360) + 360) % 360,
+  }));
+}
+
+/** Store index at which a page inserted at this visual position should land. */
+export function storeIndexFromVisual(pages: PageEntry[], visualIndex: number): number {
+  let seen = 0;
+  for (let i = 0; i < pages.length; i++) {
+    if (pages[i].deleted) continue;
+    if (seen === visualIndex) return i;
+    seen += 1;
+  }
+  return pages.length;
+}
+
+/** Visual index of a page, ignoring soft-deleted entries. -1 when missing. */
+export function visualIndexOf(pages: PageEntry[], pageId: string): number {
+  return pages.filter((page) => !page.deleted).findIndex((page) => page.id === pageId);
 }
 
 function snapshot(state: DocState, label: string): Snapshot {
@@ -308,18 +355,21 @@ export const useDoc = create<DocState>((set, get) => {
       const state = get();
       const at = options?.at ?? state.pages.length;
       const newPages: PageEntry[] = sources.flatMap((source) =>
-        Array.from({ length: source.pageCount }, (_, index) => ({
-          id: uid('page'),
-          index,
-          sourceId: source.id,
-          sourceIndex: index,
-          rotation: 0,
-          baseRotation: 0,
-          width: 0,
-          height: 0,
-          mediaWidth: 0,
-          mediaHeight: 0,
-        })),
+        Array.from({ length: source.pageCount }, (_, index) => {
+          const info = source.pageInfo?.[index];
+          return {
+            id: uid('page'),
+            index,
+            sourceId: source.id,
+            sourceIndex: index,
+            rotation: 0,
+            baseRotation: info?.baseRotation ?? 0,
+            width: 0,
+            height: 0,
+            mediaWidth: info?.mediaWidth ?? 0,
+            mediaHeight: info?.mediaHeight ?? 0,
+          };
+        }),
       );
       mutate(sources.length > 1 ? `Insert ${sources.length} documents` : 'Insert document', (current) => {
         const pages = [...current.pages];
@@ -355,7 +405,7 @@ export const useDoc = create<DocState>((set, get) => {
       });
     },
 
-    setDocName: (name) => set({ docName: name }),
+    setDocName: (name) => set({ docName: name, dirty: true }),
 
     /* -------------------------------- pages ------------------------------- */
     deletePages: (ids) => {
@@ -378,25 +428,42 @@ export const useDoc = create<DocState>((set, get) => {
         const pages = [...state.pages];
         const objects = { ...state.objects };
         const objectsByPage = { ...state.objectsByPage };
+        const crops = { ...state.crops };
+        const textEdits = [...state.textEdits];
+        const ocr = { ...state.ocr };
+        const comments = [...state.comments];
         const insertAt = Math.max(...ids.map((id) => pages.findIndex((p) => p.id === id))) + 1;
         const clones: PageEntry[] = [];
         for (const id of ids) {
           const source = pages.find((p) => p.id === id);
           if (!source) continue;
-          const clone: PageEntry = { ...source, id: uid('page'), createdAt: undefined } as PageEntry;
+          const clone: PageEntry = { ...source, id: uid('page') };
           clones.push(clone);
+          const idMap = new Map<string, string>();
           const clonedObjectIds: string[] = [];
           for (const objectId of objectsByPage[source.id] ?? []) {
             const original = objects[objectId];
             if (!original) continue;
             const copy = { ...structuredClone(original), id: uid('obj'), pageId: clone.id };
+            idMap.set(original.id, copy.id);
             objects[copy.id] = copy;
             clonedObjectIds.push(copy.id);
           }
           objectsByPage[clone.id] = clonedObjectIds;
+          if (crops[source.id]) crops[clone.id] = { ...crops[source.id] };
+          for (const edit of state.textEdits) {
+            if (edit.pageId === source.id) textEdits.push({ ...structuredClone(edit), id: uid('edit'), pageId: clone.id });
+          }
+          if (ocr[source.id]) ocr[clone.id] = { ...structuredClone(ocr[source.id]), pageId: clone.id };
+          for (const thread of state.comments) {
+            if (thread.pageId !== source.id) continue;
+            const objectId = idMap.get(thread.objectId);
+            if (!objectId) continue;
+            comments.push({ ...structuredClone(thread), id: uid('thread'), pageId: clone.id, objectId });
+          }
         }
         pages.splice(insertAt, 0, ...clones);
-        return { pages: normalizePages(pages), objects, objectsByPage };
+        return { pages: normalizePages(pages), objects, objectsByPage, crops, textEdits, ocr, comments };
       });
     },
 
@@ -454,6 +521,16 @@ export const useDoc = create<DocState>((set, get) => {
         return { crops };
       }),
 
+    setCrops: (ids, rect) =>
+      mutate(rect ? 'Crop pages' : 'Reset crops', (state) => {
+        const crops = { ...state.crops };
+        for (const id of ids) {
+          if (rect) crops[id] = { ...rect };
+          else delete crops[id];
+        }
+        return { crops };
+      }),
+
     /* ------------------------------ objects ------------------------------- */
     addObject: (object, options) => {
       const apply = (state: DocState) => ({
@@ -484,7 +561,9 @@ export const useDoc = create<DocState>((set, get) => {
         if (!existing) return {};
         return { objects: { ...state.objects, [id]: { ...existing, ...patch } as AnyObject } };
       };
-      if (options?.history === false) set(apply(get()));
+      // Live drags skip the undo stack (the caller snapshots once) but must
+      // still mark the document dirty, otherwise a move is lost on reload.
+      if (options?.history === false) set({ ...apply(get()), dirty: true });
       else mutate('Edit object', apply);
     },
 
@@ -498,7 +577,7 @@ export const useDoc = create<DocState>((set, get) => {
         }
         return { objects };
       };
-      if (options?.history === false) set(apply(get()));
+      if (options?.history === false) set({ ...apply(get()), dirty: true });
       else mutate('Edit objects', apply);
     },
 
@@ -544,6 +623,10 @@ export const useDoc = create<DocState>((set, get) => {
 
     /* --------------------------- content edits ---------------------------- */
     addTextEdit: (edit) => mutate('Edit PDF text', (state) => ({ textEdits: [...state.textEdits, edit] })),
+    updateTextEdit: (id, text) =>
+      mutate('Edit PDF text', (state) => ({
+        textEdits: state.textEdits.map((edit) => (edit.id === id ? { ...edit, text } : edit)),
+      })),
     removeTextEdit: (id) => mutate('Revert text edit', (state) => ({ textEdits: state.textEdits.filter((e) => e.id !== id) })),
 
     /* ------------------------------- assets ------------------------------- */
@@ -567,6 +650,46 @@ export const useDoc = create<DocState>((set, get) => {
 
     /* ------------------------------ bookmarks ----------------------------- */
     addBookmark: (bookmark) => mutate('Add bookmark', (state) => ({ bookmarks: [...state.bookmarks, bookmark] })),
+    addBookmarks: (bookmarks) => {
+      if (!bookmarks.length) return;
+      mutate(bookmarks.length > 1 ? `Import ${bookmarks.length} bookmarks` : 'Add bookmark', (state) => ({
+        bookmarks: [...state.bookmarks, ...bookmarks],
+      }));
+    },
+    syncNoteComment: (objectId, pageId, body, author = 'You') =>
+      mutate('Update note', (state) => {
+        const existing = state.comments.find((thread) => thread.objectId === objectId);
+        if (!existing) {
+          if (!body.trim()) return {};
+          return {
+            comments: [
+              ...state.comments,
+              {
+                id: uid('thread'),
+                objectId,
+                pageId,
+                author,
+                messages: [{ id: uid('msg'), author, body, at: Date.now() }],
+                status: 'open' as const,
+                at: Date.now(),
+              },
+            ],
+          };
+        }
+        return {
+          comments: state.comments.map((thread) =>
+            thread.id === existing.id
+              ? {
+                  ...thread,
+                  pageId,
+                  messages: thread.messages.length
+                    ? [{ ...thread.messages[0], body, at: Date.now() }, ...thread.messages.slice(1)]
+                    : [{ id: uid('msg'), author, body, at: Date.now() }],
+                }
+              : thread,
+          ),
+        };
+      }),
     updateBookmark: (id, patch) =>
       mutate('Rename bookmark', (state) => ({
         bookmarks: state.bookmarks.map((b) => (b.id === id ? { ...b, ...patch } : b)),
@@ -589,6 +712,20 @@ export const useDoc = create<DocState>((set, get) => {
         const current = state.ocr[pageId];
         if (!current) return {};
         return { ocr: { ...state.ocr, [pageId]: { ...current, replacements: [...(current.replacements ?? []), replacement] } } };
+      }),
+    updateOcrReplacement: (pageId, id, patch) =>
+      mutate('Replace OCR text', (state) => {
+        const current = state.ocr[pageId];
+        if (!current?.replacements?.length) return {};
+        return {
+          ocr: {
+            ...state.ocr,
+            [pageId]: {
+              ...current,
+              replacements: current.replacements.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+            },
+          },
+        };
       }),
     removeOcrReplacement: (pageId, id) =>
       mutate('Remove OCR replacement', (state) => {
@@ -636,8 +773,13 @@ export const useDoc = create<DocState>((set, get) => {
     loadSession: (session) => {
       clearSession().catch(() => {});
       set({
-        sources: Object.fromEntries(session.sources.map((s) => [s.id, s])),
-        pages: normalizePages(session.pages),
+        sources: Object.fromEntries(
+          session.sources.map((s) => {
+            const bytes = normalizePdfBytes(s.bytes);
+            return [s.id, { ...s, bytes, size: bytes.byteLength || s.size }];
+          }),
+        ),
+        pages: normalizePages(migrateStoredPages(session.pages, session.version ?? 1)),
         objects: Object.fromEntries(session.objects.map((o) => [o.id, o])),
         objectsByPage: buildPageIndex(session.pages, session.objects),
         assets: Object.fromEntries(session.assets.map((a) => [a.id, a])),
@@ -679,7 +821,7 @@ export const useDoc = create<DocState>((set, get) => {
     toSession: () => {
       const state = get();
       return {
-        version: 1,
+        version: 2,
         savedAt: Date.now(),
         docName: state.docName,
         sources: Object.values(state.sources),
@@ -750,8 +892,11 @@ useDoc.subscribe((state, previous) => {
 const AUTOSAVE_LIMIT_BYTES = 120 * 1024 * 1024;
 let autosaveWarned = false;
 
+let autosaveGeneration = 0;
+
 export function scheduleAutosave(): void {
   if (autosaveTimer) clearTimeout(autosaveTimer);
+  const generation = ++autosaveGeneration;
   autosaveTimer = setTimeout(() => {
     const state = useDoc.getState();
     if (!state.pages.length) return;
@@ -767,6 +912,9 @@ export function scheduleAutosave(): void {
     const session = state.toSession();
     saveSession(session)
       .then(() => {
+        // A newer edit scheduled another save while this one was in flight.
+        // Clearing dirty here would drop that edit on the next reload.
+        if (generation !== autosaveGeneration) return;
         useDoc.getState().markSaved();
         addRecent({
           name: session.docName,

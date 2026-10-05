@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   CircleDot,
+  Crop,
   Eraser,
   FormInput,
   Hand,
@@ -47,6 +48,7 @@ const MAP: Record<string, React.ComponentType<{ size?: number; strokeWidth?: num
   FormInput,
   SquareCheck,
   CircleDot,
+  Crop,
   List,
   RectangleHorizontal,
 };

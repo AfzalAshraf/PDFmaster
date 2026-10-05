@@ -148,6 +148,14 @@ export function planOcrReplacements(words: OcrWord[], replacements: OcrReplaceme
   const replace = new Map<number, { text: string; bg?: string }>();
   const unmatched: OcrReplacement[] = [];
   for (const replacement of replacements) {
+    if (typeof replacement.wordIndex === 'number') {
+      if (words[replacement.wordIndex]) {
+        replace.set(replacement.wordIndex, { text: replacement.text, bg: replacement.bg });
+      } else {
+        unmatched.push(replacement);
+      }
+      continue;
+    }
     const target = normalizeText(replacement.original).trim();
     if (!target) {
       unmatched.push(replacement);

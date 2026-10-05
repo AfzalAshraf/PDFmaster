@@ -65,9 +65,9 @@ export async function openDocument(
 }
 
 export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
-  if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
-    return data.buffer as ArrayBuffer;
-  }
+  // Always copy. pdf.js transfers the buffer into its worker, which detaches
+  // it. Returning the original buffer emptied the document and made export
+  // and print fail with "No PDF header found".
   return data.slice().buffer as ArrayBuffer;
 }
 

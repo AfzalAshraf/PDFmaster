@@ -16,7 +16,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useDoc } from '../state/store';
+import { displayedRotation, storeIndexFromVisual, useDoc, visualIndexOf } from '../state/store';
 import { useUI } from '../state/ui';
 import type { LeftPanel as LeftPanelId } from '../state/ui';
 import { Badge, Button, EmptyState, IconButton, Input, Select, Tabs } from './primitives';
@@ -149,7 +149,7 @@ const ThumbsPanel: React.FC = () => {
                     }}
                   >
                     {source && entry.mediaWidth ? (
-                      <Thumbnail sourceId={entry.sourceId} index={entry.sourceIndex} width={size * 2} rotation={entry.rotation} />
+                      <Thumbnail sourceId={entry.sourceId} index={entry.sourceIndex} width={size * 2} rotation={displayedRotation(entry)} />
                     ) : null}
                   </div>
                   <div className="mt-1 flex items-center justify-between text-2xs text-ink-400">
@@ -192,7 +192,9 @@ const ThumbsPanel: React.FC = () => {
           variant="ghost"
           onClick={() => {
             setSelection([]);
-            void import('../ui/actions').then((m) => m.insertPagesFromFiles(active.length));
+            void import('../ui/actions').then((m) =>
+              m.insertPagesFromFiles(storeIndexFromVisual(useDoc.getState().pages, currentPage + 1)),
+            );
           }}
         >
           Insert pages…
@@ -228,9 +230,10 @@ const Thumbnail: React.FC<{ sourceId: string; index: number; width: number; rota
   }, [source]);
 
   useEffect(() => {
-    if (!visible || !source || url) return;
+    if (!visible || !source) return;
     let cancelled = false;
-    void renderThumbnail(source, index, width)
+    setUrl(null);
+    void renderThumbnail(source, index, width, rotation)
       .then((data) => {
         if (!cancelled) setUrl(data);
       })
@@ -238,7 +241,7 @@ const Thumbnail: React.FC<{ sourceId: string; index: number; width: number; rota
     return () => {
       cancelled = true;
     };
-  }, [visible, source, index, width, url]);
+  }, [visible, source, index, width, rotation]);
 
   return (
     <div ref={ref} className="h-full w-full overflow-hidden">
@@ -248,7 +251,7 @@ const Thumbnail: React.FC<{ sourceId: string; index: number; width: number; rota
           alt={`Page ${index + 1}`}
           draggable={false}
           className="h-full w-full object-contain"
-          style={{ transform: rotation ? `rotate(${rotation}deg)` : undefined }}
+
         />
       ) : (
         <div className="pm-skeleton h-full w-full" />
@@ -285,10 +288,12 @@ const BookmarksPanel: React.FC = () => {
             variant="primary"
             onClick={() => {
               if (!title.trim()) return;
+              const page = pages[target - 1];
               useDoc.getState().addBookmark({
                 id: uid('bm'),
                 title: title.trim(),
                 pageIndex: target - 1,
+                pageId: page?.id,
                 createdAt: Date.now(),
               });
               setTitle('');
@@ -307,13 +312,17 @@ const BookmarksPanel: React.FC = () => {
             <li
               key={bm.id}
               className={`group flex items-center gap-1 rounded px-1.5 py-1 text-base ${
-                bm.pageIndex === currentPage ? 'bg-ink-700 text-white' : 'text-ink-200 hover:bg-ink-800'
+                bookmarkVisual(bm, pages) === currentPage ? 'bg-ink-700 text-white' : 'text-ink-200 hover:bg-ink-800'
               }`}
             >
-              <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => goToPage(bm.pageIndex)}>
+              <button
+                type="button"
+                className="min-w-0 flex-1 truncate text-left"
+                onClick={() => goToPage(Math.max(0, bookmarkVisual(bm, pages)))}
+              >
                 {bm.title}
               </button>
-              <span className="shrink-0 text-2xs text-ink-500">p{bm.pageIndex + 1}</span>
+              <span className="shrink-0 text-2xs text-ink-500">p{bookmarkVisual(bm, pages) + 1}</span>
               <button
                 type="button"
                 title="Remove"
@@ -331,49 +340,7 @@ const BookmarksPanel: React.FC = () => {
         variant="ghost"
         full
         className="mt-3"
-        onClick={async () => {
-          const state = useDoc.getState();
-          const source = Object.values(state.sources)[0];
-          if (!source) return;
-          try {
-            const proxy = await getDocumentProxy(source);
-            const outline = await proxy.getOutline();
-            if (!outline?.length) {
-              useUI.getState().toast('info', 'This document has no outline.');
-              return;
-            }
-            let count = 0;
-            const walk = (items: typeof outline, level = 0) => {
-              for (const item of items) {
-                if (typeof item.dest === 'string') {
-                  void proxy.getDestination(item.dest).then((dest) => {
-                    if (!dest) return;
-                    const ref = dest[0] as { num?: number; gen?: number } | undefined;
-                    if (ref?.num !== undefined) {
-                      void proxy.getPageIndex(ref as never).then((idx) => {
-                        if (idx >= 0 && idx < state.pages.length) {
-                          useDoc.getState().addBookmark({
-                            id: uid('bm'),
-                            title: `${'  '.repeat(level)}${item.title}`,
-                            pageIndex: idx,
-                            createdAt: Date.now(),
-                          });
-                        }
-                      });
-                    }
-                  });
-                }
-                count += 1;
-                if (item.items?.length) walk(item.items, level + 1);
-              }
-            };
-            walk(outline);
-            useUI.getState().toast('success', `Imported ${count} outline item(s).`);
-          } catch (err) {
-            useUI.getState().toast('error', err instanceof Error ? err.message : 'Outline import failed.');
-          }
-          void pageIndexFallback;
-        }}
+        onClick={() => void importOutlines()}
       >
         <Download size={12} strokeWidth={1.75} /> Import PDF outline
       </Button>
@@ -381,7 +348,64 @@ const BookmarksPanel: React.FC = () => {
   );
 };
 
-const pageIndexFallback = 0;
+function bookmarkVisual(bookmark: { pageId?: string; pageIndex: number }, visiblePages: { id: string }[]): number {
+  if (bookmark.pageId) {
+    const visual = visiblePages.findIndex((page) => page.id === bookmark.pageId);
+    if (visual >= 0) return visual;
+  }
+  return bookmark.pageIndex;
+}
+
+async function importOutlines(): Promise<void> {
+  const state = useDoc.getState();
+  const sources = Object.values(state.sources);
+  if (!sources.length) return;
+  const collected: { title: string; pageIndex: number; pageId?: string }[] = [];
+  try {
+    for (const source of sources) {
+      const proxy = await getDocumentProxy(source);
+      const outline = await proxy.getOutline();
+      if (!outline?.length) continue;
+      const walk = async (items: typeof outline, level = 0): Promise<void> => {
+        for (const item of items) {
+          const sourceIndex = await outlinePageIndex(proxy, item.dest);
+          if (sourceIndex !== null) {
+            const page = state.pages.find((entry) => !entry.deleted && entry.sourceId === source.id && entry.sourceIndex === sourceIndex);
+            if (page) {
+              collected.push({
+                title: `${'  '.repeat(level)}${item.title}`,
+                pageIndex: visualIndexOf(state.pages, page.id),
+                pageId: page.id,
+              });
+            }
+          }
+          if (item.items?.length) await walk(item.items, level + 1);
+        }
+      };
+      await walk(outline);
+    }
+    if (!collected.length) {
+      useUI.getState().toast('info', 'This document has no outline.');
+      return;
+    }
+    useDoc.getState().addBookmarks(
+      collected.map((item) => ({ id: uid('bm'), title: item.title, pageIndex: item.pageIndex, pageId: item.pageId, createdAt: Date.now() })),
+    );
+    useUI.getState().toast('success', `Imported ${collected.length} outline item(s).`);
+  } catch (err) {
+    useUI.getState().toast('error', err instanceof Error ? err.message : 'Outline import failed.');
+  }
+}
+
+async function outlinePageIndex(proxy: Awaited<ReturnType<typeof getDocumentProxy>>, dest: unknown): Promise<number | null> {
+  try {
+    const explicit = typeof dest === 'string' ? await proxy.getDestination(dest) : dest;
+    if (!Array.isArray(explicit) || !explicit[0]) return null;
+    return await proxy.getPageIndex(explicit[0] as never);
+  } catch {
+    return null;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Comments                                                            */
@@ -406,7 +430,10 @@ const CommentsPanel: React.FC = () => {
   );
 
   const threads = useMemo(() => {
-    const toIndex = (pageId: string) => pages.find((p) => p.id === pageId)?.index ?? 0;
+    const toIndex = (pageId: string) => {
+      const visual = visualIndexOf(pages, pageId);
+      return visual < 0 ? 0 : visual;
+    };
     const list = comments
       .filter((c) => (filter === 'all' ? true : filter === 'open' ? c.status === 'open' : c.status !== 'open'))
       .map((c) => ({
@@ -623,7 +650,23 @@ const SearchPanel: React.FC = () => {
         const source = sources[page.sourceId];
         if (!source) continue;
         const data = await getPageTextData(source, page.sourceIndex);
-        collected.push(...findInPage(page.id, page.index, data, query, options));
+        const ocr = useDoc.getState().ocr[page.id];
+        const searchable = data.items.length || !ocr?.words.length
+          ? data
+          : {
+              ...data,
+              text: ocr.text,
+              items: ocr.words.map((word) => ({
+                str: word.text,
+                quads: [word.rect],
+                origin: { x: word.rect.x, y: word.rect.y },
+                fontSize: word.rect.h,
+                fontName: 'OCR',
+                dir: 'ltr' as const,
+                transform: [word.rect.h, 0, 0, word.rect.h, word.rect.x, word.rect.y] as [number, number, number, number, number, number],
+              })),
+            };
+        collected.push(...findInPage(page.id, visualIndexOf(pages, page.id), searchable, query, options));
       }
       setResults(collected);
       if (collected.length) goToPage(collected[0].pageIndex);

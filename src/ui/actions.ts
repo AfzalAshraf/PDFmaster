@@ -13,8 +13,11 @@ import { downloadBlobObject, sanitizeFilename, uid } from '../core/utils';
 import { getDocument } from '../core/pdfjs';
 import { useDoc } from '../state/store';
 import { useUI } from '../state/ui';
+import { getDesktopBridge } from '../core/desktop';
+import { stageFile } from './stagedFile';
 import type { ExportOptions, PageId, Rect } from '../core/types';
 import { assetFromFile } from '../core/assets';
+import { normalizePdfBytes } from '../core/pdfbytes';
 
 export function buildInputFromStore(): BuildInput {
   const state = useDoc.getState();
@@ -206,12 +209,6 @@ export async function runExport(
       { ...request, options },
       (progress, label) => useUI.getState().setBusy({ active: true, label, progress }),
     );
-    const saved = await downloadBlobObject(result.blob, result.filename);
-    if (!saved) {
-      const error = 'The file could not be saved — the download was blocked or the save dialog was cancelled.';
-      if (announce) ui.toast('error', error);
-      return { ok: false, warnings: result.warnings, errors: [error] };
-    }
     const outcome: ExportOutcome = {
       ok: true,
       filename: result.filename,
@@ -219,10 +216,23 @@ export async function runExport(
       warnings: result.warnings,
       errors: result.stats?.editErrors ?? [],
     };
+    const desktop = getDesktopBridge();
+    if (desktop) {
+      const saved = await downloadBlobObject(result.blob, result.filename);
+      if (saved) {
+        if (announce) ui.toast('success', `Saved ${result.filename} to the folder you chose.`);
+        useDoc.getState().markSaved();
+        return outcome;
+      }
+    }
+    offerDownload(result.blob, result.filename, result.warnings);
     if (announce) {
       if (outcome.errors.length) ui.toast('error', outcome.errors[0]);
       else if (outcome.warnings.length) ui.toast('warning', outcome.warnings[0]);
-      else ui.toast('success', `Exported ${result.filename}`);
+      ui.toast(
+        'success',
+        `${result.filename} is ready. Click Download — it goes to your browser’s Downloads folder. This preview cannot pick a folder by itself.`,
+      );
       if (result.stats && (result.stats.editsFailed > 0 || result.stats.redactions > 0 || result.stats.ocrReplaced > 0)) {
         const parts = [`${result.stats.editsApplied} text edit(s) applied`];
         if (result.stats.redactions > 0) parts.push(`${result.stats.redactions} redacted run(s) removed`);
@@ -249,6 +259,18 @@ export async function quickSave(): Promise<void> {
   await runExport({ ...defaultExportOptions(), format: 'pdf' });
 }
 
+/** Stage a built file and open the download sheet. Does not claim a folder was chosen. */
+export function offerDownload(blob: Blob, filename: string, warnings: string[] = []): void {
+  const staged = stageFile(blob, filename, warnings);
+  useUI.getState().setFileOffer({
+    id: staged.id,
+    filename: staged.filename,
+    bytes: staged.bytes,
+    mime: staged.mime,
+    warnings: staged.warnings,
+  });
+}
+
 export async function saveSplit(groups: number[][]): Promise<void> {
   const ui = useUI.getState();
   ui.setBusy({ active: true, label: 'Splitting document', progress: 3 });
@@ -257,8 +279,8 @@ export async function saveSplit(groups: number[][]): Promise<void> {
     const result = await exportSplit(request, groups, (progress, label) =>
       useUI.getState().setBusy({ active: true, label, progress }),
     );
-    const saved = await downloadBlobObject(result.blob, result.filename);
-    if (saved) ui.toast('success', `Exported ${result.filename}`);
+    offerDownload(result.blob, result.filename, result.warnings);
+    ui.toast('success', `${result.filename} is ready. Click Download — it goes to your browser’s Downloads folder.`);
   } catch (err) {
     ui.toast('error', err instanceof Error ? err.message : 'Split failed.');
   } finally {
@@ -274,25 +296,10 @@ export async function printDocument(): Promise<void> {
     const request = currentExportRequest(options);
     const { buildPdf } = await import('../core/engine');
     const result = await buildPdf({ ...request.input, options: { ...request.input.options, flattenForms: true } });
+    const filename = `${sanitizeFilename(useDoc.getState().docName)}.pdf`;
     const blob = new Blob([result.bytes.slice().buffer as ArrayBuffer], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const frame = document.createElement('iframe');
-    frame.style.position = 'fixed';
-    frame.style.right = '0';
-    frame.style.bottom = '0';
-    frame.style.width = '0';
-    frame.style.height = '0';
-    frame.style.border = '0';
-    frame.src = url;
-    frame.onload = () => {
-      frame.contentWindow?.focus();
-      frame.contentWindow?.print();
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-        frame.remove();
-      }, 60_000);
-    };
-    document.body.appendChild(frame);
+    offerDownload(blob, filename, result.warnings);
+    ui.toast('success', `${filename} is ready to print. Download it, or use Print in the dialog.`);
   } catch (err) {
     ui.toast('error', err instanceof Error ? err.message : 'Print failed.');
   } finally {
@@ -357,18 +364,20 @@ export async function restoreAutosavedSession(): Promise<boolean> {
 export async function saveProjectFile(): Promise<void> {
   const session = useDoc.getState().toSession();
   const blob = new Blob([JSON.stringify({ ...session, kind: 'pdfmaster-project' })], { type: 'application/json' });
-  const saved = await downloadBlobObject(blob, `${sanitizeFilename(useDoc.getState().docName)}.pdfmaster.json`);
-  if (saved) useDoc.getState().markSaved();
+  const filename = `${sanitizeFilename(useDoc.getState().docName)}.pdfmaster.json`;
+  offerDownload(blob, filename);
+  useDoc.getState().markSaved();
+  useUI.getState().toast('success', `${filename} is ready. Click Download — it goes to your browser’s Downloads folder.`);
 }
 
 export async function openProjectFile(file: File): Promise<void> {
   const text = await file.text();
   const parsed = JSON.parse(text) as SavedSession & { kind?: string };
   if (!parsed.pages || !parsed.sources) throw new Error('This is not a PDFmaster project file.');
-  const sources = parsed.sources.map((source) => ({
-    ...source,
-    bytes: typeof source.bytes === 'string' ? Uint8Array.from(atob(source.bytes), (c) => c.charCodeAt(0)) : new Uint8Array(source.bytes as unknown as ArrayBufferLike),
-  }));
+  const sources = parsed.sources.map((source) => {
+    const bytes = normalizePdfBytes(source.bytes);
+    return { ...source, bytes, size: bytes.byteLength || source.size };
+  });
   useDoc.getState().loadSession({ ...parsed, sources });
   await saveSession({ ...parsed, sources });
   useUI.getState().toast('success', 'Project restored.');

@@ -11,6 +11,7 @@ coverage
 *.log
 .arena
 screenshots
+exports
 e2e-results
 playwright-report
 test-results

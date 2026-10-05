@@ -44,6 +44,89 @@ const MIME: Record<string, string> = {
  * same `/pdfjs/*` paths the production build uses so dev and prod behave
  * identically without duplicating multi-megabyte files into the repo.
  */
+function uniqueExportName(raw: string): string {
+  const base = path
+    .basename(raw)
+    .replace(/[^\w.\- ]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return base || 'document.pdf';
+}
+
+/** Dev-only save target. Preview iframes often swallow blob downloads; a same-origin file does not. */
+function saveCopyDevServer(): Plugin {
+  const dir = path.resolve(__dirname, 'exports');
+  return {
+    name: 'pdfmaster:save-copy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/api/save-copy', (req, res, next) => {
+        if (req.method !== 'POST') {
+          next();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        req.on('end', () => {
+          try {
+            const body = Buffer.concat(chunks);
+            const header = req.headers['x-filename'];
+            const requested = (Array.isArray(header) ? header[0] : header) || 'document.pdf';
+            const name = uniqueExportName(requested);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, name), body);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ url: `/exports/${encodeURIComponent(name)}`, filename: name, bytes: body.length }));
+          } catch {
+            res.statusCode = 500;
+            res.end('could not store the file');
+          }
+        });
+        req.on('error', () => {
+          if (!res.headersSent) {
+            res.statusCode = 400;
+            res.end('bad upload');
+          }
+        });
+      });
+      server.middlewares.use('/exports', (req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          next();
+          return;
+        }
+        const rel = decodeURIComponent((req.url ?? '/').split('?')[0]).replace(/^\/+/, '');
+        const name = path.basename(rel);
+        const file = path.resolve(dir, name);
+        if (name !== rel || !file.startsWith(dir) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+          res.statusCode = 404;
+          res.end('not found');
+          return;
+        }
+        const ext = path.extname(file).toLowerCase();
+        const type =
+          ext === '.pdf'
+            ? 'application/pdf'
+            : ext === '.json'
+              ? 'application/json'
+              : ext === '.zip'
+                ? 'application/zip'
+                : 'application/octet-stream';
+        res.setHeader('Content-Type', type);
+        res.setHeader('Cache-Control', 'no-store');
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+  };
+}
+
 function pdfjsDevAssets(): Plugin {
   return {
     name: 'pdfmaster:pdfjs-dev-assets',
@@ -112,6 +195,7 @@ export default defineConfig({
   plugins: [
     react(),
     pdfjsDevAssets(),
+    saveCopyDevServer(),
     viteStaticCopy({ targets: pdfjsAssets }),
     VitePWA({
       registerType: 'autoUpdate',

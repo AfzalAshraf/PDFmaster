@@ -106,6 +106,9 @@ interface UIState {
   collapsed: { left: boolean; right: boolean };
   /** A prepared object (signature, custom stamp) waiting for a click to be placed. */
   previewStamp: AnyObject | null;
+  /** Last built file, ready to download. The blob itself lives outside the store. */
+  fileOffer: FileOffer | null;
+  fileOfferOpen: boolean;
 
   setTool: (tool: ToolId) => void;
   setToolOption: <K extends keyof ToolOptions>(key: K, value: ToolOptions[K]) => void;
@@ -136,6 +139,17 @@ interface UIState {
   setStatusMessage: (message: string) => void;
   toggleCollapsed: (side: 'left' | 'right') => void;
   setPreviewStamp: (stamp: AnyObject | null) => void;
+  setFileOffer: (offer: FileOffer) => void;
+  showFileOffer: () => void;
+  hideFileOffer: () => void;
+}
+
+export interface FileOffer {
+  id: number;
+  filename: string;
+  bytes: number;
+  mime: string;
+  warnings: string[];
 }
 
 const defaultOptions = (): ToolOptions => ({
@@ -189,6 +203,8 @@ export const useUI = create<UIState>((set, get) => ({
   statusMessage: '',
   collapsed: { left: false, right: false },
   previewStamp: null,
+  fileOffer: null,
+  fileOfferOpen: false,
 
   setTool: (tool) =>
     set((state) => ({
@@ -242,14 +258,17 @@ export const useUI = create<UIState>((set, get) => ({
   setStatusMessage: (message) => set({ statusMessage: message }),
   toggleCollapsed: (side) => set((state) => ({ collapsed: { ...state.collapsed, [side]: !state.collapsed[side] } })),
   setPreviewStamp: (stamp) => set({ previewStamp: stamp }),
+  setFileOffer: (offer) => set({ fileOffer: offer, fileOfferOpen: true }),
+  showFileOffer: () => set({ fileOfferOpen: true }),
+  hideFileOffer: () => set({ fileOfferOpen: false }),
 }));
 
 /** Human readable hint shown in the status bar for the active tool. */
 export const TOOL_HINTS: Partial<Record<ToolId, string>> = {
   select: 'Click to select, drag to move, arrow keys to nudge, Delete to remove.',
-  hand: 'Drag to pan the page.',
+  hand: 'Drag to pan the page. The cursor is a hand.',
   text: 'Click on the page to place a text box, then type.',
-  editText: 'Click existing text to rewrite it. Font and position are kept.',
+  editText: 'Click a word to edit it. Scanned pages are recognised automatically — press Enter to keep the change.',
   image: 'Click to place the image, or drop an image file on the page.',
   shape: 'Drag to draw. Hold Shift for a square/circle.',
   draw: 'Draw with the mouse; freehand strokes are smoothed on save.',
@@ -263,6 +282,7 @@ export const TOOL_HINTS: Partial<Record<ToolId, string>> = {
   link: 'Drag over an area to make it a clickable link.',
   measure: 'Drag to measure a distance.',
   redact: 'Drag over content to mark it for redaction, then apply.',
+  crop: 'Drag the area to keep. The crop is applied when you export.',
   eraser: 'Click an object to delete it.',
   'form-text': 'Drag to place a fillable text field.',
   'form-checkbox': 'Click to place a checkbox.',
